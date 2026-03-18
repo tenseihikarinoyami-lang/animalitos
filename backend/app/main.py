@@ -84,6 +84,13 @@ async def scheduled_weekly_recovery_backfill() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging(debug=settings.debug)
+
+    expected_provider = settings.database_provider.lower()
+    if expected_provider in {"postgres", "supabase"} and not db_service.is_postgres_mode:
+        raise RuntimeError("DATABASE_PROVIDER is set to postgres, but Postgres/Supabase is not reachable.")
+    if expected_provider == "firebase" and not db_service.is_firestore_mode:
+        raise RuntimeError("DATABASE_PROVIDER is set to firebase, but Firestore is not reachable.")
+
     ensure_admin_user()
     db_service.ensure_default_schedules()
 
