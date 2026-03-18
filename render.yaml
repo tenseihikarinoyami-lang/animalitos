@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: animalitos-backend
+    runtime: docker
+    rootDir: backend
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_PROVIDER
+        value: postgres
+      - key: USE_EXTERNAL_SCHEDULER
+        value: "true"
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: RESULTS_CACHE_TTL_SECONDS
+        value: "300"
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+      - key: SCHEDULER_SERVICE_TOKEN
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: BACKEND_PUBLIC_URL
+        sync: false
+      - key: FRONTEND_PUBLIC_URL
+        sync: false
