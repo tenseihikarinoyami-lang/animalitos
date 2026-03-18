@@ -28,24 +28,18 @@ Arquitectura recomendada:
 
 ### 1. Obtener la conexion real de Supabase
 En tu proyecto Supabase:
-1. Abre `Settings`.
-2. Entra a `Database`.
-3. Busca `Connection string`.
-4. Copia la cadena completa de Postgres.
+1. Haz clic en `Connect`.
+2. Busca `Session pooler`.
+3. Copia la cadena completa de Postgres.
+4. Reemplaza `[YOUR-PASSWORD]` por tu clave real.
 
 Debe verse parecida a esta:
 
 ```env
-postgresql://postgres.TU_PROYECTO:TU_PASSWORD@aws-0-us-east-1.pooler.supabase.com:6543/postgres
+postgresql://postgres.TU_PROYECTO:TU_PASSWORD@aws-0-TU_REGION.pooler.supabase.com:5432/postgres
 ```
 
-O en algunos casos:
-
-```env
-postgresql://postgres:TU_PASSWORD@db.TU_HOST.supabase.co:5432/postgres?sslmode=require
-```
-
-Ese es el valor real que necesito para `DATABASE_URL`.
+Ese es el valor real recomendado para `DATABASE_URL` en este despliegue.
 
 ### 2. Rotar la contrasena del proyecto
 Como ya la compartiste en el chat, te recomiendo:
