@@ -67,6 +67,41 @@ async def test_backfill_aggregates_results(monkeypatch):
     assert response["details"]["empty_days"] == ["2026-03-15"]
 
 
+@pytest.mark.asyncio
+async def test_background_backfill_reports_status_and_finishes(monkeypatch):
+    async def fake_fetch_results_for_date(target_date, include_today_urls=False):
+        return {
+            "results": [
+                _sample_result(target_date, "08:00", 11, "Lotto Activo"),
+            ],
+            "errors": [],
+            "source_urls": [f"https://example.com/{target_date.isoformat()}"],
+            "source_reports": [],
+        }
+
+    monkeypatch.setattr(
+        "app.services.monitoring.scraper_service.fetch_results_for_date",
+        fake_fetch_results_for_date,
+    )
+
+    snapshot, started = await monitoring_service.start_backfill(
+        BackfillRequest(start_date=date(2026, 3, 15), end_date=date(2026, 3, 16))
+    )
+
+    assert started is True
+    assert snapshot["status"] == "queued"
+    assert monitoring_service._backfill_task is not None
+
+    await monitoring_service._backfill_task
+    final_status = monitoring_service.get_backfill_status()
+
+    assert final_status is not None
+    assert final_status["status"] == "completed"
+    assert final_status["completed_days"] == 2
+    assert final_status["new_results"] == 2
+    assert final_status["ingestion_run_id"]
+
+
 def test_possible_results_summary_prioritizes_recent_and_frequent_animals():
     today = local_now().date()
     yesterday = today - timedelta(days=1)

@@ -1,9 +1,9 @@
-const CACHE_NAME = 'animalitos-monitor-v2'
-const APP_SHELL = ['/', '/manifest.webmanifest']
+const CACHE_NAME = 'animalitos-monitor-v3'
+const STATIC_ASSETS = ['/manifest.webmanifest']
 
 self.addEventListener('install', (event) => {
   self.skipWaiting()
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)))
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS)))
 })
 
 self.addEventListener('activate', (event) => {
@@ -24,6 +24,30 @@ self.addEventListener('fetch', (event) => {
   if (requestUrl.origin !== self.location.origin) return
   // Evitar errores conocidos del navegador con only-if-cached fuera de same-origin.
   if (event.request.cache === 'only-if-cached' && event.request.mode !== 'same-origin') return
+  const isNavigationRequest = event.request.mode === 'navigate' || event.request.destination === 'document'
+
+  if (isNavigationRequest) {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response && response.status === 200 && response.type === 'basic') {
+            const cloned = response.clone()
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, cloned))
+          }
+          return response
+        })
+        .catch(() => caches.match(event.request)),
+    )
+    return
+  }
+
+  const isStaticAsset =
+    requestUrl.pathname.startsWith('/assets/') ||
+    requestUrl.pathname === '/manifest.webmanifest' ||
+    requestUrl.pathname.endsWith('.css') ||
+    requestUrl.pathname.endsWith('.js')
+
+  if (!isStaticAsset) return
 
   event.respondWith(
     caches.match(event.request).then((cached) => {

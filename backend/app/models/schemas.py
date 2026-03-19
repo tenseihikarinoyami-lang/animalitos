@@ -342,6 +342,28 @@ class AuditLogEntry(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class BackfillJobStatus(BaseModel):
+    job_id: str
+    status: str
+    trigger: str | None = None
+    message: str | None = None
+    start_date: date
+    end_date: date
+    total_days: int
+    completed_days: int = 0
+    current_date: date | None = None
+    results_found: int = 0
+    new_results: int = 0
+    duplicates: int = 0
+    empty_days: list[str] = Field(default_factory=list)
+    errors_count: int = 0
+    last_error: str | None = None
+    started_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+    ingestion_run_id: str | None = None
+
+
 class SystemStatusResponse(BaseModel):
     generated_at: datetime
     firebase_connected: bool
@@ -352,6 +374,7 @@ class SystemStatusResponse(BaseModel):
     latest_failed_run: IngestionRun | None = None
     latest_backfill_run: IngestionRun | None = None
     latest_prediction_run: PredictionRunRecord | None = None
+    active_backfill: BackfillJobStatus | None = None
     total_results: int
     warnings: list[str] = Field(default_factory=list)
 

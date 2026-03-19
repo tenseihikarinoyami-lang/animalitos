@@ -116,6 +116,36 @@
             Preparar 90 dias
           </button>
         </div>
+        <div v-if="backfillStatus" class="backfill-status-panel">
+          <div class="quality-row">
+            <span>Estado actual</span>
+            <strong>
+              <span class="pill" :class="pillClass(backfillTone(backfillStatus.status))">
+                {{ backfillStatus.status }}
+              </span>
+            </strong>
+          </div>
+          <div class="quality-row">
+            <span>Progreso</span>
+            <strong>{{ backfillStatus.completed_days }}/{{ backfillStatus.total_days }} dias</strong>
+          </div>
+          <div class="progress-shell">
+            <div class="progress-bar" :style="{ width: `${backfillProgress}%` }"></div>
+          </div>
+          <p class="section-copy compact-copy">
+            {{ backfillStatus.message || 'Sin actividad de backfill registrada.' }}
+          </p>
+          <p class="section-copy compact-copy">
+            Rango: {{ backfillStatus.start_date }} a {{ backfillStatus.end_date }}
+            <span v-if="backfillStatus.current_date"> | Ultimo dia: {{ backfillStatus.current_date }}</span>
+          </p>
+          <p class="section-copy compact-copy">
+            Nuevos: {{ backfillStatus.new_results }} | Duplicados: {{ backfillStatus.duplicates }} | Errores: {{ backfillStatus.errors_count }}
+          </p>
+          <p v-if="backfillStatus.last_error" class="warning-pill">
+            {{ backfillStatus.last_error }}
+          </p>
+        </div>
       </article>
     </section>
 
@@ -366,7 +396,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import AppShell from '@/components/AppShell.vue'
 import { useLotteryStore } from '@/stores/lottery'
 
@@ -405,6 +435,17 @@ const possibleResultsPreview = computed(() =>
 const qualityRows = computed(() => lotteryStore.qualityReport?.items || [])
 const auditPreview = computed(() => lotteryStore.auditLogs.slice(0, 6))
 const usersPendingPasswordChange = computed(() => lotteryStore.users.filter((user) => user.must_change_password).length)
+const backfillStatus = computed(() => lotteryStore.backfillStatus)
+const backfillIsActive = computed(() => ['queued', 'running', 'finalizing'].includes(backfillStatus.value?.status))
+const backfillProgress = computed(() => {
+  const totalDays = backfillStatus.value?.total_days || 0
+  const completedDays = backfillStatus.value?.completed_days || 0
+  if (!totalDays) return 0
+  return Math.max(0, Math.min(100, Math.round((completedDays / totalDays) * 100)))
+})
+
+let backfillPollTimer = null
+let backfillPollInFlight = false
 
 const statusCards = computed(() => [
   {
@@ -444,6 +485,10 @@ onMounted(() => {
   reloadAdminData()
 })
 
+onBeforeUnmount(() => {
+  stopBackfillPolling()
+})
+
 function buildPossibleResultsPayload(previewOnly = false) {
   return {
     top_n: possibleResultsForm.top_n,
@@ -455,6 +500,13 @@ function buildPossibleResultsPayload(previewOnly = false) {
 function statusTone(status) {
   if (status === 'complete') return 'success'
   if (status === 'partial') return 'warning'
+  return 'danger'
+}
+
+function backfillTone(status) {
+  if (status === 'completed') return 'success'
+  if (status === 'partial' || status === 'finalizing') return 'warning'
+  if (status === 'queued' || status === 'running') return 'success'
   return 'danger'
 }
 
@@ -485,26 +537,43 @@ function asPercent(value) {
   return `${(value * 100).toFixed(1)}%`
 }
 
-async function reloadAdminData() {
-  const [status, quality, audit, possible, backtesting, users] = await Promise.all([
+async function reloadAdminData(options = {}) {
+  const updateLog = options.updateLog !== false
+  const includeHeavyData = !backfillIsActive.value
+  const requests = [
     lotteryStore.fetchSystemStatus(),
     lotteryStore.fetchQualityReport({ days: 14 }),
     lotteryStore.fetchAuditLogs({ limit: 50 }),
-    lotteryStore.fetchPossibleResults(),
-    lotteryStore.fetchBacktesting(),
     lotteryStore.fetchUsers(),
-  ])
+    lotteryStore.fetchBackfillStatus({ silent: true }),
+  ]
 
-  actionLog.value = {
-    message: 'Panel admin recargado',
-    details: {
-      status_loaded: !!status,
-      quality_loaded: !!quality,
-      audit_loaded: !!audit,
-      possible_results_loaded: !!possible,
-      backtesting_loaded: !!backtesting,
-      users_loaded: !!users,
-    },
+  if (includeHeavyData) {
+    requests.push(lotteryStore.fetchPossibleResults())
+    requests.push(lotteryStore.fetchBacktesting())
+  }
+
+  const [status, quality, audit, users, backfillState, possible, backtesting] = await Promise.all(requests)
+  if (backfillState?.status && ['queued', 'running', 'finalizing'].includes(backfillState.status)) {
+    ensureBackfillPolling()
+  } else {
+    stopBackfillPolling()
+  }
+
+  if (updateLog) {
+    actionLog.value = {
+      message: 'Panel admin recargado',
+      details: {
+        status_loaded: !!status,
+        quality_loaded: !!quality,
+        audit_loaded: !!audit,
+        backfill_loaded: !!backfillState,
+        possible_results_loaded: !!possible,
+        backtesting_loaded: !!backtesting,
+        users_loaded: !!users,
+        heavy_data_loaded: includeHeavyData,
+      },
+    }
   }
 }
 
@@ -525,7 +594,8 @@ async function runBackfill() {
   const response = await lotteryStore.backfill({ ...backfill })
   if (response) {
     actionLog.value = response
-    await reloadAdminData()
+    ensureBackfillPolling()
+    await reloadAdminData({ updateLog: false })
   }
 }
 
@@ -620,6 +690,40 @@ async function exportPossibleResultsPdf() {
   })
   if (response) actionLog.value = { message: 'Tendencia PDF exportada', details: response }
 }
+
+function stopBackfillPolling() {
+  if (backfillPollTimer) {
+    window.clearInterval(backfillPollTimer)
+    backfillPollTimer = null
+  }
+  backfillPollInFlight = false
+}
+
+function ensureBackfillPolling() {
+  if (backfillPollTimer) return
+  backfillPollTimer = window.setInterval(async () => {
+    if (backfillPollInFlight) return
+    backfillPollInFlight = true
+    try {
+      const status = await lotteryStore.fetchBackfillStatus({ silent: true })
+      if (!status) {
+        stopBackfillPolling()
+        return
+      }
+
+      if (!['queued', 'running', 'finalizing'].includes(status.status)) {
+        stopBackfillPolling()
+        actionLog.value = {
+          message: status.message || 'Backfill finalizado',
+          details: status,
+        }
+        await reloadAdminData({ updateLog: false })
+      }
+    } finally {
+      backfillPollInFlight = false
+    }
+  }, 4000)
+}
 </script>
 
 <style scoped>
@@ -682,6 +786,28 @@ async function exportPossibleResultsPdf() {
 
 .compact-copy {
   margin-top: 1rem;
+}
+
+.backfill-status-panel {
+  display: grid;
+  gap: 0.8rem;
+  margin-top: 1rem;
+}
+
+.progress-shell {
+  width: 100%;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(6, 16, 30, 0.78);
+  border: 1px solid rgba(119, 177, 232, 0.12);
+}
+
+.progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(135deg, rgba(88, 209, 255, 0.9), rgba(24, 154, 211, 0.85));
+  transition: width 0.25s ease;
 }
 
 .warning-stack {

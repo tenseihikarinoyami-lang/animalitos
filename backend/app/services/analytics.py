@@ -8,6 +8,7 @@ from app.models.schemas import (
     ANIMALITOS_MAP,
     AnalyticsTrends,
     AuditLogEntry,
+    BackfillJobStatus,
     BacktestingHourMetric,
     BacktestingLotteryMetric,
     BacktestingSummary,
@@ -1097,6 +1098,7 @@ class AnalyticsService:
         latest_failed = next((run for run in ingestion_runs if run.get("status") == "failed"), None)
         latest_backfill = db_service.get_latest_backfill_run()
         latest_prediction = db_service.get_latest_prediction_run()
+        active_backfill_snapshot = db_service.get_analytics_snapshot("admin:backfill-status")
 
         warnings = []
         if settings.jwt_secret_key == "super-secret-key-change-in-production":
@@ -1126,6 +1128,11 @@ class AnalyticsService:
             latest_failed_run=IngestionRun.model_validate(latest_failed) if latest_failed else None,
             latest_backfill_run=IngestionRun.model_validate(latest_backfill) if latest_backfill else None,
             latest_prediction_run=latest_prediction,
+            active_backfill=(
+                BackfillJobStatus.model_validate(active_backfill_snapshot)
+                if active_backfill_snapshot and active_backfill_snapshot.get("status") in {"queued", "running", "finalizing"}
+                else None
+            ),
             total_results=db_service.count_results(),
             warnings=warnings,
         )

@@ -20,6 +20,7 @@ Capacidades activas:
 - Auditoria admin.
 - Exportacion `CSV/PDF`.
 - Panel admin actualizado y shell PWA basica.
+- Backfill manual asincrono con seguimiento de progreso y estado persistido en el panel admin.
 - Soporte para proveedor de base `Supabase Postgres` ademas de Firestore/mock.
 - Endpoints internos listos para scheduler externo.
 
@@ -60,6 +61,7 @@ Capacidades activas:
 - APIs nuevas:
   - `GET /api/analytics/possible-results`
   - `GET /api/analytics/backtesting`
+  - `GET /api/admin/backfill/status`
   - `GET /api/admin/system/status`
   - `GET /api/admin/system/quality`
   - `GET /api/admin/system/audit`
@@ -84,6 +86,8 @@ Capacidades activas:
 - Panel admin reforzado con:
   - estado del sistema
   - resumen de cobertura
+  - estado del backfill en segundo plano
+  - barra de progreso y ultima fecha procesada
   - backtesting
   - auditoria reciente
   - exportes
@@ -91,6 +95,7 @@ Capacidades activas:
   - creacion de usuarios temporales
   - reseteo de claves por usuario
 - Manifest y service worker basicos para fase PWA.
+- Recarga automatica de chunks si el navegador queda con una version vieja del frontend tras un deploy.
 
 ### Limpieza
 - Se retiro legado no usado de prediccion/ML:
@@ -133,6 +138,7 @@ Definir en [`backend/.env`](/D:/Proyectos/animalitos/backend/.env):
    - usuarios pendientes de cambio de clave
 4. Revisar `Monitoreo en vivo` para validar los candidatos por sorteo pendiente.
 5. Lanzar backfill si hay huecos.
+   - el backfill manual ahora corre en segundo plano y el panel muestra `queued`, `running`, `finalizing`, `completed`, `partial` o `failed`
 6. Revisar Telegram admin para:
    - resumen estadistico del dia
    - alertas previas al siguiente sorteo

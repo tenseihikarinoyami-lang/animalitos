@@ -6,11 +6,13 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.main import app, scheduler
 from app.services.database import db_service
+from app.services.monitoring import monitoring_service
 from app.services.rate_limit import rate_limiter
 
 
 @pytest.fixture(autouse=True)
 def reset_mock_database():
+    monitoring_service._backfill_task = None
     db_service.db = None
     db_service.reset_mock_state()
     rate_limiter.reset()
@@ -19,6 +21,7 @@ def reset_mock_database():
     settings.bootstrap_admin_password = "admin123"
     settings.allow_insecure_dev_admin = False
     yield
+    monitoring_service._backfill_task = None
     db_service.db = None
     db_service.reset_mock_state()
     rate_limiter.reset()

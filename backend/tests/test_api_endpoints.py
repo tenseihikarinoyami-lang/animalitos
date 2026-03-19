@@ -153,6 +153,74 @@ def test_admin_quality_status_audit_and_backtesting_routes(client, admin_headers
     assert "overall_top_3_rate" in backtesting_response.json()
 
 
+def test_admin_background_backfill_status_routes(client, admin_headers, monkeypatch):
+    async def fake_start_backfill(request, trigger="manual"):
+        return (
+            {
+                "job_id": "job-123",
+                "status": "queued",
+                "trigger": "manual:backfill",
+                "message": "Backfill en cola para ejecutarse en segundo plano.",
+                "start_date": date(2026, 3, 1),
+                "end_date": date(2026, 3, 7),
+                "total_days": 7,
+                "completed_days": 0,
+                "current_date": date(2026, 3, 1),
+                "results_found": 0,
+                "new_results": 0,
+                "duplicates": 0,
+                "empty_days": [],
+                "errors_count": 0,
+                "last_error": None,
+                "started_at": datetime(2026, 3, 19, tzinfo=timezone.utc),
+                "updated_at": datetime(2026, 3, 19, tzinfo=timezone.utc),
+                "completed_at": None,
+                "ingestion_run_id": None,
+            },
+            True,
+        )
+
+    monkeypatch.setattr("app.api.admin.monitoring_service.start_backfill", fake_start_backfill)
+    monkeypatch.setattr(
+        "app.api.admin.monitoring_service.get_backfill_status",
+        lambda: {
+            "job_id": "job-123",
+            "status": "running",
+            "trigger": "manual:backfill",
+            "message": "Procesando 2026-03-01 (1/7)",
+            "start_date": date(2026, 3, 1),
+            "end_date": date(2026, 3, 7),
+            "total_days": 7,
+            "completed_days": 1,
+            "current_date": date(2026, 3, 1),
+            "results_found": 12,
+            "new_results": 10,
+            "duplicates": 2,
+            "empty_days": [],
+            "errors_count": 0,
+            "last_error": None,
+            "started_at": datetime(2026, 3, 19, tzinfo=timezone.utc),
+            "updated_at": datetime(2026, 3, 19, tzinfo=timezone.utc),
+            "completed_at": None,
+            "ingestion_run_id": None,
+        },
+    )
+
+    start_response = client.post(
+        "/api/admin/backfill",
+        headers=admin_headers,
+        json={"start_date": "2026-03-01", "end_date": "2026-03-07"},
+    )
+    status_response = client.get("/api/admin/backfill/status", headers=admin_headers)
+
+    assert start_response.status_code == 200
+    assert start_response.json()["details"]["started"] is True
+    assert start_response.json()["details"]["backfill"]["job_id"] == "job-123"
+    assert status_response.status_code == 200
+    assert status_response.json()["status"] == "running"
+    assert status_response.json()["completed_days"] == 1
+
+
 def test_admin_user_management_and_password_rotation(client, admin_headers):
     create_response = client.post(
         "/api/admin/users",

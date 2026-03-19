@@ -14,6 +14,7 @@ from app.models.schemas import (
     AdminActionResponse,
     AdminUserCreateRequest,
     AuditLogEntry,
+    BackfillJobStatus,
     BackfillRequest,
     PredictionRunRequest,
     QualityReportResponse,
@@ -201,15 +202,35 @@ async def backfill_results(
     payload: BackfillRequest,
     current_user: dict = Depends(require_admin),
 ):
-    response = await monitoring_service.backfill(request=payload, trigger="manual")
+    backfill_status, started = await monitoring_service.start_backfill(request=payload, trigger="manual")
     _audit_admin_action(
         action="results_backfill",
         current_user=current_user,
         request=request,
-        status_value="success",
-        details=response["details"],
+        status_value="accepted" if started else backfill_status.get("status", "running"),
+        details={
+            "job_id": backfill_status["job_id"],
+            "start_date": str(backfill_status["start_date"]),
+            "end_date": str(backfill_status["end_date"]),
+            "total_days": backfill_status["total_days"],
+            "started": started,
+        },
     )
-    return response
+    return {
+        "message": "Backfill iniciado en segundo plano." if started else "Ya hay un backfill en ejecucion.",
+        "details": {
+            "started": started,
+            "backfill": backfill_status,
+        },
+    }
+
+
+@router.get("/backfill/status", response_model=BackfillJobStatus | None)
+async def get_backfill_status(current_user: dict = Depends(require_admin)):
+    status_snapshot = monitoring_service.get_backfill_status()
+    if not status_snapshot:
+        return None
+    return status_snapshot
 
 
 @router.post("/telegram/test", response_model=AdminActionResponse)

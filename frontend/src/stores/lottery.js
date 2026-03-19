@@ -13,23 +13,31 @@ export const useLotteryStore = defineStore('lottery', () => {
   const qualityReport = ref(null)
   const auditLogs = ref([])
   const backtesting = ref(null)
+  const backfillStatus = ref(null)
   const users = ref([])
   const loading = ref(false)
   const error = ref('')
   const pendingCount = ref(0)
 
-  async function withLoader(fn) {
-    pendingCount.value += 1
-    loading.value = true
-    error.value = ''
+  async function withLoader(fn, options = {}) {
+    const silent = options.silent === true
+    if (!silent) {
+      pendingCount.value += 1
+      loading.value = true
+      error.value = ''
+    }
     try {
       return await fn()
     } catch (err) {
-      error.value = err.response?.data?.detail || err.message || 'Unexpected error'
+      if (!silent) {
+        error.value = err.response?.data?.detail || err.message || 'Unexpected error'
+      }
       return null
     } finally {
-      pendingCount.value = Math.max(pendingCount.value - 1, 0)
-      loading.value = pendingCount.value > 0
+      if (!silent) {
+        pendingCount.value = Math.max(pendingCount.value - 1, 0)
+        loading.value = pendingCount.value > 0
+      }
     }
   }
 
@@ -102,8 +110,17 @@ export const useLotteryStore = defineStore('lottery', () => {
   async function backfill(payload) {
     return withLoader(async () => {
       const response = await api.post('/admin/backfill', payload)
+      backfillStatus.value = response.data.details?.backfill || backfillStatus.value
       return response.data
     })
+  }
+
+  async function fetchBackfillStatus(options = {}) {
+    return withLoader(async () => {
+      const response = await api.get('/admin/backfill/status')
+      backfillStatus.value = response.data
+      return response.data
+    }, options)
   }
 
   async function testTelegram() {
@@ -219,6 +236,7 @@ export const useLotteryStore = defineStore('lottery', () => {
     qualityReport,
     auditLogs,
     backtesting,
+    backfillStatus,
     users,
     loading,
     error,
@@ -233,6 +251,7 @@ export const useLotteryStore = defineStore('lottery', () => {
     fetchQualityReport,
     fetchAuditLogs,
     fetchBacktesting,
+    fetchBackfillStatus,
     fetchUsers,
     refreshResults,
     backfill,

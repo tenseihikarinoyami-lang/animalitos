@@ -1,5 +1,8 @@
+import asyncio
 import logging
-from datetime import timedelta
+from copy import deepcopy
+from datetime import datetime, timedelta
+from uuid import uuid4
 
 from app.core.config import settings
 from app.core.logging import log_event
@@ -12,6 +15,103 @@ from app.services.telegram import telegram_service
 
 
 class MonitoringService:
+    BACKFILL_STATUS_SNAPSHOT_KEY = "admin:backfill-status"
+    BACKFILL_STALE_MINUTES = 20
+
+    def __init__(self) -> None:
+        self._backfill_task: asyncio.Task | None = None
+
+    @staticmethod
+    def _coerce_datetime(value) -> datetime | None:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return None
+
+    def _save_backfill_snapshot(self, payload: dict) -> dict:
+        snapshot = deepcopy(payload)
+        snapshot["generated_at"] = snapshot.get("updated_at") or utc_now()
+        db_service.save_analytics_snapshot(
+            snapshot_key=self.BACKFILL_STATUS_SNAPSHOT_KEY,
+            snapshot=snapshot,
+        )
+        snapshot.pop("generated_at", None)
+        return snapshot
+
+    def get_backfill_status(self) -> dict | None:
+        snapshot = db_service.get_analytics_snapshot(self.BACKFILL_STATUS_SNAPSHOT_KEY)
+        if not snapshot:
+            return None
+
+        snapshot = deepcopy(snapshot)
+        snapshot.pop("generated_at", None)
+        status = snapshot.get("status")
+        updated_at = self._coerce_datetime(snapshot.get("updated_at"))
+        task_active = bool(self._backfill_task and not self._backfill_task.done())
+
+        if status in {"queued", "running", "finalizing"} and not task_active and updated_at:
+            if utc_now() - updated_at > timedelta(minutes=self.BACKFILL_STALE_MINUTES):
+                snapshot["status"] = "stale"
+                snapshot["message"] = "El ultimo backfill se interrumpio antes de completarse."
+                snapshot["updated_at"] = utc_now()
+                snapshot["completed_at"] = snapshot.get("completed_at") or snapshot["updated_at"]
+                snapshot = self._save_backfill_snapshot(snapshot)
+
+        return snapshot
+
+    def _resolve_backfill_range(self, request: BackfillRequest) -> tuple:
+        now_local = local_now().date()
+        days = request.days or settings.backfill_default_days
+        end_date = request.end_date or now_local
+        start_date = request.start_date or (end_date - timedelta(days=days - 1))
+        if start_date > end_date:
+            start_date, end_date = end_date, start_date
+        total_days = (end_date - start_date).days + 1
+        return start_date, end_date, total_days
+
+    def _create_backfill_snapshot(self, request: BackfillRequest, trigger: str) -> dict:
+        start_date, end_date, total_days = self._resolve_backfill_range(request)
+        now = utc_now()
+        return {
+            "job_id": str(uuid4()),
+            "status": "queued",
+            "trigger": f"{trigger}:backfill",
+            "message": "Backfill en cola para ejecutarse en segundo plano.",
+            "start_date": start_date,
+            "end_date": end_date,
+            "total_days": total_days,
+            "completed_days": 0,
+            "current_date": start_date,
+            "results_found": 0,
+            "new_results": 0,
+            "duplicates": 0,
+            "empty_days": [],
+            "errors_count": 0,
+            "last_error": None,
+            "started_at": now,
+            "updated_at": now,
+            "completed_at": None,
+            "ingestion_run_id": None,
+        }
+
+    async def start_backfill(self, request: BackfillRequest, trigger: str = "manual") -> tuple[dict, bool]:
+        task_active = bool(self._backfill_task and not self._backfill_task.done())
+        current = self.get_backfill_status()
+        if task_active and current and current.get("status") in {"queued", "running", "finalizing"}:
+            return current, False
+
+        snapshot = self._create_backfill_snapshot(request, trigger)
+        self._save_backfill_snapshot(snapshot)
+        self._backfill_task = asyncio.create_task(
+            self._run_backfill_job(
+                request=request,
+                trigger=trigger,
+                snapshot=snapshot,
+            )
+        )
+        return snapshot, True
+
     def _persist_default_snapshots(
         self,
         overview=None,
@@ -128,6 +228,12 @@ class MonitoringService:
 
         return missing_slots, source_status
 
+    def _update_backfill_snapshot(self, snapshot: dict, **updates) -> dict:
+        next_snapshot = deepcopy(snapshot)
+        next_snapshot.update(updates)
+        next_snapshot["updated_at"] = updates.get("updated_at") or utc_now()
+        return self._save_backfill_snapshot(next_snapshot)
+
     async def refresh_today(self, trigger: str = "manual", notify: bool = True) -> dict:
         started_at = utc_now()
         today = local_now().date()
@@ -159,12 +265,7 @@ class MonitoringService:
             "duplicates": save_stats["duplicate_count"],
             "errors": scrape_payload["errors"],
             "source_urls": scrape_payload["source_urls"],
-            "lotteries_seen": sorted(
-                {
-                    result["canonical_lottery_name"]
-                    for result in scrape_payload["results"]
-                }
-            ),
+            "lotteries_seen": sorted({result["canonical_lottery_name"] for result in scrape_payload["results"]}),
             "coverage_start": today,
             "coverage_end": today,
             "parser_version": scrape_payload.get("parser_version"),
@@ -215,13 +316,13 @@ class MonitoringService:
             "overview": overview.model_dump(),
         }
 
-    async def backfill(self, request: BackfillRequest, trigger: str = "manual") -> dict:
-        now_local = local_now().date()
-        days = request.days or settings.backfill_default_days
-        end_date = request.end_date or now_local
-        start_date = request.start_date or (end_date - timedelta(days=days - 1))
-        if start_date > end_date:
-            start_date, end_date = end_date, start_date
+    async def _execute_backfill(
+        self,
+        request: BackfillRequest,
+        trigger: str = "manual",
+        progress_callback=None,
+    ) -> dict:
+        start_date, end_date, total_days = self._resolve_backfill_range(request)
 
         inserted_total = 0
         duplicates_total = 0
@@ -232,9 +333,24 @@ class MonitoringService:
         lotteries_seen = set()
         started_at = utc_now()
         source_reports = []
-
         current_date = start_date
+        completed_days = 0
+
         while current_date <= end_date:
+            if progress_callback:
+                progress_callback(
+                    status="running",
+                    message=f"Procesando {current_date.isoformat()} ({completed_days + 1}/{total_days})",
+                    current_date=current_date,
+                    completed_days=completed_days,
+                    results_found=results_total,
+                    new_results=inserted_total,
+                    duplicates=duplicates_total,
+                    empty_days=list(empty_days),
+                    errors_count=len(errors),
+                    last_error=errors[-1] if errors else None,
+                )
+
             scrape_payload = await scraper_service.fetch_results_for_date(current_date)
             source_urls.extend(scrape_payload["source_urls"])
             errors.extend(scrape_payload["errors"])
@@ -250,7 +366,23 @@ class MonitoringService:
                 for result in scrape_payload["results"]:
                     lotteries_seen.add(result["canonical_lottery_name"])
 
+            completed_days += 1
+            if progress_callback:
+                progress_callback(
+                    status="running",
+                    message=f"{completed_days} de {total_days} dias procesados",
+                    current_date=current_date,
+                    completed_days=completed_days,
+                    results_found=results_total,
+                    new_results=inserted_total,
+                    duplicates=duplicates_total,
+                    empty_days=list(empty_days),
+                    errors_count=len(errors),
+                    last_error=errors[-1] if errors else None,
+                )
+
             current_date += timedelta(days=1)
+            await asyncio.sleep(0)
 
         completed_at = utc_now()
         status = "success" if not errors else "partial"
@@ -279,6 +411,22 @@ class MonitoringService:
             "source_reports": source_reports,
         }
         run["id"] = db_service.save_ingestion_run(run)
+
+        if progress_callback:
+            progress_callback(
+                status="finalizing",
+                message="Recalculando snapshots y analitica del panel",
+                completed_days=total_days,
+                current_date=end_date,
+                results_found=results_total,
+                new_results=inserted_total,
+                duplicates=duplicates_total,
+                empty_days=list(empty_days),
+                errors_count=len(errors),
+                last_error=errors[-1] if errors else None,
+                ingestion_run_id=run["id"],
+            )
+
         previous_summary = self._latest_prediction_summary()
         self._persist_default_snapshots(
             overview=analytics_service.build_dashboard_overview(),
@@ -306,9 +454,61 @@ class MonitoringService:
                 "new_results": inserted_total,
                 "duplicates": duplicates_total,
                 "empty_days": empty_days,
+                "errors_count": len(errors),
+                "status": status,
+                "total_days": total_days,
                 "ingestion_run_id": run["id"],
             },
         }
+
+    async def _run_backfill_job(self, request: BackfillRequest, trigger: str, snapshot: dict) -> None:
+        current_snapshot = self._update_backfill_snapshot(
+            snapshot,
+            status="running",
+            message="Backfill iniciado en segundo plano.",
+        )
+
+        def progress_callback(**updates):
+            nonlocal current_snapshot
+            current_snapshot = self._update_backfill_snapshot(current_snapshot, **updates)
+
+        try:
+            response = await self._execute_backfill(
+                request=request,
+                trigger=trigger,
+                progress_callback=progress_callback,
+            )
+            final_status = response["details"].get("status", "success")
+            final_label = "completed" if final_status == "success" else final_status
+            current_snapshot = self._update_backfill_snapshot(
+                current_snapshot,
+                status=final_label,
+                message="Backfill finalizado y snapshots actualizados.",
+                completed_days=current_snapshot.get("total_days", current_snapshot.get("completed_days", 0)),
+                completed_at=utc_now(),
+                ingestion_run_id=response["details"].get("ingestion_run_id"),
+                results_found=response["details"].get("results_found", 0),
+                new_results=response["details"].get("new_results", 0),
+                duplicates=response["details"].get("duplicates", 0),
+                empty_days=response["details"].get("empty_days", []),
+                errors_count=response["details"].get("errors_count", 0),
+                current_date=current_snapshot.get("end_date"),
+            )
+        except Exception as exc:
+            current_snapshot = self._update_backfill_snapshot(
+                current_snapshot,
+                status="failed",
+                message="El backfill fallo antes de completarse.",
+                last_error=str(exc),
+                errors_count=(current_snapshot.get("errors_count") or 0) + 1,
+                completed_at=utc_now(),
+            )
+            raise
+        finally:
+            self._backfill_task = None
+
+    async def backfill(self, request: BackfillRequest, trigger: str = "manual") -> dict:
+        return await self._execute_backfill(request=request, trigger=trigger)
 
     async def run_due_scheduler_cycle(self) -> dict:
         now_local = local_now()
