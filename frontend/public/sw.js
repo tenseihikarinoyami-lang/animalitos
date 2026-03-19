@@ -14,6 +14,9 @@ self.addEventListener('activate', (event) => {
 })
 
 self.addEventListener('fetch', (event) => {
+  const url = event.request.url
+  // Ignorar requests que no sean http/https (extensiones, chrome-devtools, etc.)
+  if (!url.startsWith('http://') && !url.startsWith('https://')) return
   if (event.request.method !== 'GET') return
   event.respondWith(
     caches.match(event.request).then((cached) => {
