@@ -85,6 +85,28 @@ BACKEND_PUBLIC_URL=https://TU_BACKEND.onrender.com
 FRONTEND_PUBLIC_URL=https://TU_FRONTEND.vercel.app
 ```
 
+### Como agregar o editar variables en Render despues del despliegue
+Render no vuelve a pedir automaticamente las variables secretas despues de crear el servicio. Si te falto una o luego necesitas cambiarla, hazlo desde el mismo servicio.
+
+Paso a paso:
+1. Entra al dashboard de Render.
+2. Abre el servicio `animalitos-backend`.
+3. Ve a la pestana `Environment`.
+4. Busca la seccion `Environment Variables`.
+5. Si la variable ya existe, edita el valor.
+6. Si no existe, pulsa `Add Environment Variable`.
+7. Escribe `Key` y `Value`.
+8. Guarda los cambios.
+9. Haz `Manual Deploy` o `Save, rebuild and deploy`, segun la opcion que te muestre Render.
+
+Variables que normalmente completas despues del primer despliegue:
+
+```env
+BACKEND_PUBLIC_URL=https://TU_BACKEND.onrender.com
+FRONTEND_PUBLIC_URL=https://TU_FRONTEND.vercel.app
+CORS_ORIGINS=http://localhost:5173,https://TU_FRONTEND.vercel.app
+```
+
 ### 5. Inicializar la base Postgres
 Tienes dos formas:
 
@@ -120,6 +142,34 @@ VITE_API_BASE_URL=https://TU_BACKEND.onrender.com/api
 
 5. Despliega.
 
+### Configuracion recomendada en Vercel
+En el formulario de importacion o luego en `Settings`:
+- Project name: `animalitos-frontend`
+- Root Directory: `frontend`
+- Framework Preset: `Vite`
+- Build Command: `npm run build`
+- Output Directory: `dist`
+- Install Command: dejar automatico o `npm install`
+
+### Como agregar o editar variables en Vercel despues del despliegue
+1. Entra al dashboard de Vercel.
+2. Abre tu proyecto.
+3. Ve a `Settings`.
+4. Entra a `Environment Variables`.
+5. Pulsa `Add New`.
+6. En `Name` coloca `VITE_API_BASE_URL`.
+7. En `Value` coloca `https://TU_BACKEND.onrender.com/api`.
+8. Marca al menos `Production`.
+9. Guarda.
+10. Ve a `Deployments` y pulsa `Redeploy` en el ultimo deployment.
+
+Cuando Vercel termine, copia la URL final y regresa a Render para completar:
+
+```env
+FRONTEND_PUBLIC_URL=https://TU_FRONTEND.vercel.app
+CORS_ORIGINS=http://localhost:5173,https://TU_FRONTEND.vercel.app
+```
+
 ### 8. Crear scheduler gratis en cron-job.org
 1. Entra a [cron-job.org](https://cron-job.org/en/).
 2. Crea una cuenta.
@@ -154,6 +204,61 @@ Este job tambien ayuda a mantener despierto el backend free de Render.
 - Metodo: `POST`
 - Frecuencia: domingo `04:10`
 - Zona horaria: `America/Caracas`
+
+### Como crear cada job en cron-job.org
+1. Entra a tu panel de cron-job.org.
+2. Pulsa `Create cronjob`.
+3. En `Title` escribe un nombre claro.
+4. En `Address` pega la URL completa.
+5. En `Execution` elige la frecuencia.
+6. En `Request method` selecciona `POST`.
+7. En la parte avanzada agrega el header:
+
+```http
+X-Scheduler-Token: TU_TOKEN_PRIVADO
+```
+
+8. Deja vacio el `Request body`.
+9. Activa el job.
+10. Guarda.
+
+### Configuracion sugerida para los 4 jobs
+
+#### 1. Animalitos Refresh
+- Title: `Animalitos Refresh`
+- URL: `https://TU_BACKEND.onrender.com/api/internal/scheduler/refresh`
+- Method: `POST`
+- Timezone: `America/Caracas`
+- Frequency: cada `5 minutos`
+
+#### 2. Animalitos Possible Results
+- Title: `Animalitos Possible Results`
+- URL: `https://TU_BACKEND.onrender.com/api/internal/scheduler/possible-results`
+- Method: `POST`
+- Timezone: `America/Caracas`
+- Hora: `08:05`
+
+#### 3. Animalitos Daily Summary
+- Title: `Animalitos Daily Summary`
+- URL: `https://TU_BACKEND.onrender.com/api/internal/scheduler/daily-summary`
+- Method: `POST`
+- Timezone: `America/Caracas`
+- Hora: `21:15`
+
+#### 4. Animalitos Weekly Backfill
+- Title: `Animalitos Weekly Backfill`
+- URL: `https://TU_BACKEND.onrender.com/api/internal/scheduler/weekly-backfill`
+- Method: `POST`
+- Timezone: `America/Caracas`
+- Dia: domingo
+- Hora: `04:10`
+
+### Prueba minima recomendada
+Antes de activar todos:
+1. Crea primero `Animalitos Refresh`.
+2. Ejecuta una prueba manual si tu plan de cron-job.org muestra `Run now`.
+3. Revisa los logs en Render.
+4. Si responde `200`, crea los otros tres.
 
 ## Lo que necesito que me pases ahora
 Para seguir ayudandote sin bloquear nada, enviame solo esto:
