@@ -5,6 +5,7 @@ import api from '@/services/api'
 export const useAuthStore = defineStore('auth', () => {
   const user = ref(null)
   const token = ref(localStorage.getItem('token') || null)
+  let bootstrapRequestToken = null
 
   const isAuthenticated = computed(() => !!token.value)
   const mustChangePassword = computed(() => !!user.value?.must_change_password)
@@ -39,14 +40,23 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function fetchUser() {
-    if (!token.value) return
+  async function fetchUser(expectedToken = token.value) {
+    if (!expectedToken) return
+    bootstrapRequestToken = expectedToken
     
     try {
+      api.setToken(expectedToken)
       const response = await api.get('/auth/me')
+      if (token.value !== expectedToken) return
       user.value = response.data
     } catch (error) {
-      logout()
+      if (token.value === expectedToken) {
+        logout()
+      }
+    } finally {
+      if (bootstrapRequestToken === expectedToken) {
+        bootstrapRequestToken = null
+      }
     }
   }
 
@@ -69,6 +79,7 @@ export const useAuthStore = defineStore('auth', () => {
   function logout() {
     user.value = null
     token.value = null
+    bootstrapRequestToken = null
     localStorage.removeItem('token')
     api.setToken(null)
   }
