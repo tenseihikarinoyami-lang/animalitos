@@ -217,7 +217,15 @@
         <article v-for="item in predictionRows" :key="item.canonical_lottery_name" class="prediction-card">
           <div class="prediction-head">
             <div>
-              <h4>{{ item.canonical_lottery_name }}</h4>
+              <h4 class="title-with-icon">
+                <img
+                  :src="lotteryIconUrl(item.canonical_lottery_name)"
+                  :alt="item.canonical_lottery_name"
+                  class="lottery-inline-icon"
+                  @error="(event) => handleIconError(event, 'lottery')"
+                />
+                <span>{{ item.canonical_lottery_name }}</span>
+              </h4>
               <p>Proximo: {{ item.next_draw_time_local || 'Sin sorteo pendiente' }}</p>
             </div>
             <span class="pill">{{ item.remaining_draws_today }} pendientes</span>
@@ -245,7 +253,15 @@
                   class="candidate-item"
                 >
                   <div>
-                    <strong>{{ candidate.animal_number.toString().padStart(2, '0') }} {{ candidate.animal_name }}</strong>
+                    <strong class="title-with-icon">
+                      <img
+                        :src="animalIconUrl(candidate.animal_name, item.canonical_lottery_name)"
+                        :alt="candidate.animal_name"
+                        class="animal-inline-icon"
+                        @error="handleIconError"
+                      />
+                      <span>{{ candidate.animal_number.toString().padStart(2, '0') }} {{ candidate.animal_name }}</span>
+                    </strong>
                     <p>
                       coincid {{ candidate.coincidence_hits }} | trans {{ candidate.transition_hits }} |
                       pareja {{ candidate.pair_context_hits }} | trio {{ candidate.trio_context_hits }} |
@@ -285,7 +301,13 @@ import {
 } from 'chart.js'
 import AppShell from '@/components/AppShell.vue'
 import { useLotteryStore } from '@/stores/lottery'
-import { PRIMARY_LOTTERIES, formatDateTime } from '@/utils/monitoring'
+import {
+  animalIconUrl,
+  handleIconError,
+  lotteryIconUrl,
+  PRIMARY_LOTTERIES,
+  formatDateTime,
+} from '@/utils/monitoring'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineElement, Title, Tooltip, Legend)
 
@@ -536,6 +558,32 @@ onMounted(async () => {
 .prediction-head h4 {
   margin: 0;
   font-family: 'Space Grotesk', sans-serif;
+}
+
+.title-with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.lottery-inline-icon,
+.animal-inline-icon {
+  object-fit: contain;
+  background: rgba(6, 16, 30, 0.7);
+}
+
+.lottery-inline-icon {
+  width: 28px;
+  height: 28px;
+  padding: 0.18rem;
+  border-radius: 10px;
+}
+
+.animal-inline-icon {
+  width: 30px;
+  height: 30px;
+  padding: 0.15rem;
+  border-radius: 10px;
 }
 
 .score-chip {

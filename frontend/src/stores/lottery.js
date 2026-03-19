@@ -195,7 +195,7 @@ export const useLotteryStore = defineStore('lottery', () => {
     })
   }
 
-  async function downloadFile(url, filename, params = {}) {
+  async function downloadFile(url, filename, params = {}, options = {}) {
     return withLoader(async () => {
       const response = await api.get(url, {
         params,
@@ -210,19 +210,19 @@ export const useLotteryStore = defineStore('lottery', () => {
       link.remove()
       window.URL.revokeObjectURL(blobUrl)
       return { success: true, filename }
-    })
+    }, options)
   }
 
-  async function exportHistoryCsv(params = {}) {
-    return downloadFile('/admin/export/history.csv', 'animalitos-history.csv', params)
+  async function exportHistoryCsv(params = {}, options = {}) {
+    return downloadFile('/admin/export/history.csv', 'animalitos-history.csv', params, options)
   }
 
-  async function exportPossibleResultsCsv(params = {}) {
-    return downloadFile('/admin/export/possible-results.csv', 'animalitos-possible-results.csv', params)
+  async function exportPossibleResultsCsv(params = {}, options = {}) {
+    return downloadFile('/admin/export/possible-results.csv', 'animalitos-possible-results.csv', params, options)
   }
 
-  async function exportPossibleResultsPdf(params = {}) {
-    return downloadFile('/admin/export/possible-results.pdf', 'animalitos-possible-results.pdf', params)
+  async function exportPossibleResultsPdf(params = {}, options = {}) {
+    return downloadFile('/admin/export/possible-results.pdf', 'animalitos-possible-results.pdf', params, options)
   }
 
   return {

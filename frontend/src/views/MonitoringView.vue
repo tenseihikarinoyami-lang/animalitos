@@ -17,7 +17,16 @@
     <section class="glass-card section-card monitor-top">
       <div>
         <p class="eyebrow">Ventana activa</p>
-        <h3 class="section-title">{{ nextDraw?.canonical_lottery_name || 'Sin siguiente sorteo' }}</h3>
+        <h3 class="section-title title-with-icon">
+          <img
+            v-if="nextDraw?.canonical_lottery_name"
+            :src="lotteryIconUrl(nextDraw.canonical_lottery_name)"
+            :alt="nextDraw.canonical_lottery_name"
+            class="lottery-inline-icon"
+            @error="(event) => handleIconError(event, 'lottery')"
+          />
+          <span>{{ nextDraw?.canonical_lottery_name || 'Sin siguiente sorteo' }}</span>
+        </h3>
         <p class="section-copy">
           {{ nextDraw ? `Proximo corte ${nextDraw.draw_date} a las ${nextDraw.draw_time_local}.` : 'Sin horarios disponibles.' }}
         </p>
@@ -47,7 +56,15 @@
         <div class="monitor-card-head">
           <div>
             <p class="eyebrow">Loteria</p>
-            <h3>{{ lotteryName }}</h3>
+            <h3 class="title-with-icon">
+              <img
+                :src="lotteryIconUrl(lotteryName)"
+                :alt="lotteryName"
+                class="lottery-inline-icon"
+                @error="(event) => handleIconError(event, 'lottery')"
+              />
+              <span>{{ lotteryName }}</span>
+            </h3>
           </div>
           <span class="pill">{{ groupedResults[lotteryName]?.length || 0 }} draws</span>
         </div>
@@ -55,7 +72,15 @@
         <div v-if="groupedResults[lotteryName]?.length" class="stream-list">
           <div v-for="item in groupedResults[lotteryName]" :key="item.dedupe_key" class="stream-item">
             <div>
-              <strong>{{ emojiForAnimal(item.animal_name) }} {{ item.animal_name }}</strong>
+              <strong class="title-with-icon">
+                <img
+                  :src="animalIconUrl(item.animal_name, lotteryName)"
+                  :alt="item.animal_name"
+                  class="animal-inline-icon"
+                  @error="handleIconError"
+                />
+                <span>{{ item.animal_name }}</span>
+              </strong>
               <p>{{ item.draw_date }} | {{ item.draw_time_local }}</p>
             </div>
             <span class="number-chip">{{ item.animal_number.toString().padStart(2, '0') }}</span>
@@ -83,7 +108,15 @@
         <article v-for="item in predictionRows" :key="item.canonical_lottery_name" class="prediction-card">
           <div class="prediction-head">
             <div>
-              <h4>{{ item.canonical_lottery_name }}</h4>
+              <h4 class="title-with-icon">
+                <img
+                  :src="lotteryIconUrl(item.canonical_lottery_name)"
+                  :alt="item.canonical_lottery_name"
+                  class="lottery-inline-icon"
+                  @error="(event) => handleIconError(event, 'lottery')"
+                />
+                <span>{{ item.canonical_lottery_name }}</span>
+              </h4>
               <p>Proximo: {{ item.next_draw_time_local || 'Sin ventana pendiente' }}</p>
             </div>
             <span class="pill">{{ item.remaining_draws_today }} pendientes</span>
@@ -112,7 +145,15 @@
                   class="candidate-item"
                 >
                   <div>
-                    <strong>{{ candidate.animal_number.toString().padStart(2, '0') }} {{ candidate.animal_name }}</strong>
+                    <strong class="title-with-icon">
+                      <img
+                        :src="animalIconUrl(candidate.animal_name, item.canonical_lottery_name)"
+                        :alt="candidate.animal_name"
+                        class="animal-inline-icon"
+                        @error="handleIconError"
+                      />
+                      <span>{{ candidate.animal_number.toString().padStart(2, '0') }} {{ candidate.animal_name }}</span>
+                    </strong>
                     <p>
                       score {{ candidate.score.toFixed(2) }} | coincid {{ candidate.coincidence_hits }} |
                       trans {{ candidate.transition_hits }} | pareja {{ candidate.pair_context_hits }} |
@@ -140,7 +181,13 @@
 import { computed, onMounted, onUnmounted } from 'vue'
 import AppShell from '@/components/AppShell.vue'
 import { useLotteryStore } from '@/stores/lottery'
-import { countdownLabel, emojiForAnimal, PRIMARY_LOTTERIES } from '@/utils/monitoring'
+import {
+  animalIconUrl,
+  countdownLabel,
+  handleIconError,
+  lotteryIconUrl,
+  PRIMARY_LOTTERIES,
+} from '@/utils/monitoring'
 
 const AUTO_REFRESH_MS = 120000
 
@@ -283,6 +330,32 @@ onUnmounted(() => {
 .prediction-head h4 {
   margin: 0.3rem 0 0;
   font-family: 'Space Grotesk', sans-serif;
+}
+
+.title-with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.lottery-inline-icon,
+.animal-inline-icon {
+  object-fit: contain;
+  background: rgba(6, 16, 30, 0.7);
+}
+
+.lottery-inline-icon {
+  width: 28px;
+  height: 28px;
+  padding: 0.18rem;
+  border-radius: 10px;
+}
+
+.animal-inline-icon {
+  width: 30px;
+  height: 30px;
+  padding: 0.15rem;
+  border-radius: 10px;
 }
 
 .stream-list,

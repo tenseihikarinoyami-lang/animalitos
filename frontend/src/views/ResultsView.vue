@@ -67,11 +67,31 @@
           </thead>
           <tbody>
             <tr v-for="item in history" :key="item.dedupe_key">
-              <td>{{ item.canonical_lottery_name }}</td>
+              <td>
+                <span class="inline-with-icon">
+                  <img
+                    :src="lotteryIconUrl(item.canonical_lottery_name)"
+                    :alt="item.canonical_lottery_name"
+                    class="lottery-inline-icon"
+                    @error="(event) => handleIconError(event, 'lottery')"
+                  />
+                  <span>{{ item.canonical_lottery_name }}</span>
+                </span>
+              </td>
               <td>{{ item.draw_date }}</td>
               <td>{{ item.draw_time_local }}</td>
               <td><span class="number-chip">{{ item.animal_number.toString().padStart(2, '0') }}</span></td>
-              <td>{{ emojiForAnimal(item.animal_name) }} {{ item.animal_name }}</td>
+              <td>
+                <span class="inline-with-icon">
+                  <img
+                    :src="animalIconUrl(item.animal_name, item.canonical_lottery_name)"
+                    :alt="item.animal_name"
+                    class="animal-inline-icon"
+                    @error="handleIconError"
+                  />
+                  <span>{{ item.animal_name }}</span>
+                </span>
+              </td>
               <td>{{ item.source_page }}</td>
             </tr>
           </tbody>
@@ -88,7 +108,7 @@
 import { computed, onMounted, reactive } from 'vue'
 import AppShell from '@/components/AppShell.vue'
 import { useLotteryStore } from '@/stores/lottery'
-import { emojiForAnimal, PRIMARY_LOTTERIES } from '@/utils/monitoring'
+import { animalIconUrl, handleIconError, lotteryIconUrl, PRIMARY_LOTTERIES } from '@/utils/monitoring'
 
 const lotteryStore = useLotteryStore()
 const today = new Date().toISOString().slice(0, 10)
@@ -121,6 +141,32 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.inline-with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.lottery-inline-icon,
+.animal-inline-icon {
+  object-fit: contain;
+  background: rgba(6, 16, 30, 0.7);
+}
+
+.lottery-inline-icon {
+  width: 28px;
+  height: 28px;
+  padding: 0.18rem;
+  border-radius: 10px;
+}
+
+.animal-inline-icon {
+  width: 30px;
+  height: 30px;
+  padding: 0.15rem;
+  border-radius: 10px;
+}
+
 .filter-head,
 .results-head {
   display: flex;

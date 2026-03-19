@@ -71,6 +71,7 @@ def test_dashboard_and_history_routes(client, admin_headers):
 
     assert overview_payload["total_results_today"] >= 2
     assert any(item["canonical_lottery_name"] == "Lotto Activo" for item in overview_payload["primary_lotteries"])
+    assert all("next_draw" in item for item in overview_payload["primary_lotteries"])
     assert history_payload["total"] == 1
     assert history_payload["items"][0]["animal_number"] == 33
 
@@ -219,6 +220,31 @@ def test_admin_background_backfill_status_routes(client, admin_headers, monkeypa
     assert status_response.status_code == 200
     assert status_response.json()["status"] == "running"
     assert status_response.json()["completed_days"] == 1
+
+
+def test_export_routes_return_downloadable_files(client, admin_headers):
+    today = local_now().date()
+    db_service.upsert_results(
+        [
+            make_result(today, "08:00", 12, "Lotto Activo"),
+            make_result(today, "09:00", 21, "La Granjita"),
+        ]
+    )
+
+    csv_response = client.get(
+        "/api/admin/export/history.csv",
+        headers=admin_headers,
+        params={"start_date": today.isoformat(), "end_date": today.isoformat()},
+    )
+    pdf_response = client.get("/api/admin/export/possible-results.pdf", headers=admin_headers)
+
+    assert csv_response.status_code == 200
+    assert "attachment; filename=\"animalitos-history.csv\"" in csv_response.headers["content-disposition"]
+    assert "draw_date" in csv_response.text
+    assert pdf_response.status_code == 200
+    assert "attachment; filename=\"animalitos-possible-results.pdf\"" in pdf_response.headers["content-disposition"]
+    assert pdf_response.headers["content-type"] == "application/pdf"
+    assert len(pdf_response.content) > 100
 
 
 def test_admin_user_management_and_password_rotation(client, admin_headers):

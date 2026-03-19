@@ -298,14 +298,17 @@
           Descarga historico real y el ultimo resumen estadistico para soporte y seguimiento.
         </p>
         <div class="button-row admin-actions">
-          <button class="btn-ghost" :disabled="lotteryStore.loading" @click="exportHistoryCsv">
-            Exportar historico CSV
+          <button class="btn-ghost" :disabled="exporting.history" @click="exportHistoryCsv">
+            <span v-if="exporting.history" class="spinner"></span>
+            <span v-else>Exportar historico CSV</span>
           </button>
-          <button class="btn-ghost" :disabled="lotteryStore.loading" @click="exportPossibleResultsCsv">
-            Exportar tendencia CSV
+          <button class="btn-ghost" :disabled="exporting.trendCsv" @click="exportPossibleResultsCsv">
+            <span v-if="exporting.trendCsv" class="spinner"></span>
+            <span v-else>Exportar tendencia CSV</span>
           </button>
-          <button class="btn-secondary" :disabled="lotteryStore.loading" @click="exportPossibleResultsPdf">
-            Exportar tendencia PDF
+          <button class="btn-secondary" :disabled="exporting.trendPdf" @click="exportPossibleResultsPdf">
+            <span v-if="exporting.trendPdf" class="spinner"></span>
+            <span v-else>Exportar tendencia PDF</span>
           </button>
         </div>
       </article>
@@ -426,6 +429,11 @@ const newUser = reactive({
 })
 
 const passwordResets = reactive({})
+const exporting = reactive({
+  history: false,
+  trendCsv: false,
+  trendPdf: false,
+})
 
 const systemStatus = computed(() => lotteryStore.systemStatus)
 const prettyLog = computed(() => JSON.stringify(actionLog.value, null, 2))
@@ -671,23 +679,50 @@ async function resetPassword(username) {
 }
 
 async function exportHistoryCsv() {
-  const response = await lotteryStore.exportHistoryCsv({ start_date: backfill.start_date, end_date: backfill.end_date })
+  exporting.history = true
+  let response = null
+  try {
+    response = await lotteryStore.exportHistoryCsv(
+      { start_date: backfill.start_date, end_date: backfill.end_date },
+      { silent: true },
+    )
+  } finally {
+    exporting.history = false
+  }
   if (response) actionLog.value = { message: 'Historico CSV exportado', details: response }
 }
 
 async function exportPossibleResultsCsv() {
-  const response = await lotteryStore.exportPossibleResultsCsv({
-    top_n: possibleResultsForm.top_n,
-    lotteries: possibleResultsForm.lotteries.join(','),
-  })
+  exporting.trendCsv = true
+  let response = null
+  try {
+    response = await lotteryStore.exportPossibleResultsCsv(
+      {
+        top_n: possibleResultsForm.top_n,
+        lotteries: possibleResultsForm.lotteries.join(','),
+      },
+      { silent: true },
+    )
+  } finally {
+    exporting.trendCsv = false
+  }
   if (response) actionLog.value = { message: 'Tendencia CSV exportada', details: response }
 }
 
 async function exportPossibleResultsPdf() {
-  const response = await lotteryStore.exportPossibleResultsPdf({
-    top_n: possibleResultsForm.top_n,
-    lotteries: possibleResultsForm.lotteries.join(','),
-  })
+  exporting.trendPdf = true
+  let response = null
+  try {
+    response = await lotteryStore.exportPossibleResultsPdf(
+      {
+        top_n: possibleResultsForm.top_n,
+        lotteries: possibleResultsForm.lotteries.join(','),
+      },
+      { silent: true },
+    )
+  } finally {
+    exporting.trendPdf = false
+  }
   if (response) actionLog.value = { message: 'Tendencia PDF exportada', details: response }
 }
 

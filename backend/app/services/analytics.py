@@ -666,6 +666,7 @@ class AnalyticsService:
                     completion_ratio=(len(lottery_results) / expected_today) if expected_today else 0,
                     last_result=lottery_results[0] if lottery_results else None,
                     next_draw_time_local=next_time["draw_time_local"] if next_time else None,
+                    next_draw=next_time,
                 )
             )
 

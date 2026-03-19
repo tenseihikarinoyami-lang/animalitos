@@ -21,7 +21,15 @@
         <div class="schedule-head">
           <div>
             <p class="eyebrow">Loteria</p>
-            <h3>{{ schedule.display_name }}</h3>
+            <h3 class="title-with-icon">
+              <img
+                :src="lotteryIconUrl(schedule.canonical_lottery_name)"
+                :alt="schedule.display_name"
+                class="lottery-inline-icon"
+                @error="(event) => handleIconError(event, 'lottery')"
+              />
+              <span>{{ schedule.display_name }}</span>
+            </h3>
           </div>
           <span class="pill">{{ schedule.times.length }} slots</span>
         </div>
@@ -39,6 +47,7 @@
 import { computed, onMounted } from 'vue'
 import AppShell from '@/components/AppShell.vue'
 import { useLotteryStore } from '@/stores/lottery'
+import { handleIconError, lotteryIconUrl } from '@/utils/monitoring'
 
 const lotteryStore = useLotteryStore()
 const schedules = computed(() => lotteryStore.schedules)
@@ -73,6 +82,21 @@ onMounted(async () => {
 .schedule-head h3 {
   margin: 0.3rem 0 0;
   font-family: 'Space Grotesk', sans-serif;
+}
+
+.title-with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.lottery-inline-icon {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  background: rgba(6, 16, 30, 0.7);
+  padding: 0.18rem;
+  border-radius: 10px;
 }
 
 .time-chip-grid {

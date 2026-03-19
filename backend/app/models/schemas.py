@@ -96,6 +96,7 @@ class LotteryOverviewCard(BaseModel):
     completion_ratio: float
     last_result: ResultRecord | None = None
     next_draw_time_local: str | None = None
+    next_draw: dict[str, Any] | None = None
 
 
 class DashboardOverview(BaseModel):
