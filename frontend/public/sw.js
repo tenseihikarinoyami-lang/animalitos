@@ -1,7 +1,8 @@
-const CACHE_NAME = 'animalitos-monitor-v1'
+const CACHE_NAME = 'animalitos-monitor-v2'
 const APP_SHELL = ['/', '/manifest.webmanifest']
 
 self.addEventListener('install', (event) => {
+  self.skipWaiting()
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)))
 })
 
@@ -11,13 +12,19 @@ self.addEventListener('activate', (event) => {
       Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))),
     ),
   )
+  self.clients.claim()
 })
 
 self.addEventListener('fetch', (event) => {
-  const url = event.request.url
+  const requestUrl = new URL(event.request.url)
   // Ignorar requests que no sean http/https (extensiones, chrome-devtools, etc.)
-  if (!url.startsWith('http://') && !url.startsWith('https://')) return
+  if (!['http:', 'https:'].includes(requestUrl.protocol)) return
   if (event.request.method !== 'GET') return
+  // Evitar cachear recursos ajenos al dominio de la app.
+  if (requestUrl.origin !== self.location.origin) return
+  // Evitar errores conocidos del navegador con only-if-cached fuera de same-origin.
+  if (event.request.cache === 'only-if-cached' && event.request.mode !== 'same-origin') return
+
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached
