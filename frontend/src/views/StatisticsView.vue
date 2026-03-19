@@ -62,6 +62,11 @@
         <p class="metric-label">Top 3 global</p>
       </article>
       <article class="glass-card metric-card">
+        <p class="eyebrow">Baseline</p>
+        <h3 class="metric-value">{{ asPercent(backtesting?.baseline_overall_top_3_rate) }}</h3>
+        <p class="metric-label">Top 3 simple</p>
+      </article>
+      <article class="glass-card metric-card">
         <p class="eyebrow">Metodo</p>
         <h3 class="metric-value">{{ possibleResults?.methodology_version || 'n/a' }}</h3>
         <p class="metric-label">Version estadistica</p>
@@ -156,6 +161,14 @@
             <span>Top 5</span>
             <strong>{{ asPercent(backtesting?.overall_top_5_rate) }}</strong>
           </div>
+          <div class="method-line">
+            <span>Baseline Top 3</span>
+            <strong>{{ asPercent(backtesting?.baseline_overall_top_3_rate) }}</strong>
+          </div>
+          <div class="method-line">
+            <span>Supera baseline</span>
+            <strong>{{ backtesting?.beats_baseline ? 'Si' : 'No' }}</strong>
+          </div>
         </div>
       </article>
 
@@ -180,6 +193,24 @@
     </section>
 
     <section class="glass-card section-card">
+      <p class="eyebrow">Cambios</p>
+      <h3 class="section-title">Alertas de movimiento intradia</h3>
+      <div v-if="possibleResults?.change_alerts?.length" class="anomaly-list">
+        <div
+          v-for="alert in possibleResults.change_alerts"
+          :key="alert"
+          class="anomaly-item"
+        >
+          <strong>Cambio detectado</strong>
+          <p>{{ alert }}</p>
+        </div>
+      </div>
+      <div v-else class="empty-state">
+        {{ lotteryStore.loading ? 'Comparando con la corrida anterior...' : 'Sin cambios fuertes entre corridas recientes.' }}
+      </div>
+    </section>
+
+    <section class="glass-card section-card">
       <p class="eyebrow">Prediccion operativa</p>
       <h3 class="section-title">Candidatos por sorteo pendiente</h3>
       <div v-if="predictionRows.length" class="prediction-grid">
@@ -200,8 +231,13 @@
             >
               <div class="window-head">
                 <strong>{{ window.draw_time_local }}</strong>
-                <span>Patron del dia: {{ window.observed_prefix.join(', ') || 'sin base aun' }}</span>
+                <span>
+                  Patron del dia: {{ window.observed_prefix.join(', ') || 'sin base aun' }} |
+                  {{ window.daypart || 'sin tramo' }} |
+                  {{ countdownText(window.minutes_until) }}
+                </span>
               </div>
+              <p v-if="window.change_summary" class="window-change">{{ window.change_summary }}</p>
               <div class="candidate-list">
                 <div
                   v-for="candidate in window.candidates.slice(0, 5)"
@@ -211,7 +247,9 @@
                   <div>
                     <strong>{{ candidate.animal_number.toString().padStart(2, '0') }} {{ candidate.animal_name }}</strong>
                     <p>
-                      coincid {{ candidate.coincidence_hits }} | trans {{ candidate.transition_hits }} | slot {{ candidate.slot_hits }}
+                      coincid {{ candidate.coincidence_hits }} | trans {{ candidate.transition_hits }} |
+                      pareja {{ candidate.pair_context_hits }} | trio {{ candidate.trio_context_hits }} |
+                      weekday {{ candidate.weekday_slot_hits }} | delta {{ formatDelta(candidate.rank_delta) }}
                     </p>
                   </div>
                   <span class="score-chip">{{ candidate.score.toFixed(2) }}</span>
@@ -382,6 +420,16 @@ function asWeight(value) {
   return `${Math.round(value * 100)}%`
 }
 
+function countdownText(value) {
+  if (value === null || value === undefined) return 'sin countdown'
+  return value <= 0 ? 'sorteo en curso' : `faltan ${value} min`
+}
+
+function formatDelta(value) {
+  if (value === null || value === undefined || value === 0) return '0'
+  return value > 0 ? `+${value}` : `${value}`
+}
+
 onMounted(async () => {
   await loadAnalytics()
 })
@@ -403,6 +451,12 @@ onMounted(async () => {
 .analytics-metrics,
 .stats-grid {
   margin-top: 1rem;
+}
+
+.window-change {
+  margin: 0.6rem 0 0;
+  color: var(--brand);
+  font-size: 0.88rem;
 }
 
 .status-banner {

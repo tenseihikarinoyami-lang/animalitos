@@ -71,8 +71,13 @@
       <p class="eyebrow">Prediccion dinamica</p>
       <h3 class="section-title">Posibles resultados de hoy por sorteo pendiente</h3>
       <p class="section-copy">
-        Cada bloque usa historico, frecuencia por hora, coincidencias del patron del dia y transicion desde los ultimos resultados observados.
+        Cada bloque usa historico por hora, dia de la semana, contexto intradia, parejas, trios y cambios frente a la corrida anterior.
       </p>
+
+      <div v-if="lotteryStore.possibleResults?.change_alerts?.length" class="change-banner">
+        <strong>Cambios recientes:</strong>
+        <span>{{ lotteryStore.possibleResults.change_alerts.join(' | ') }}</span>
+      </div>
 
       <div v-if="predictionRows.length" class="prediction-grid">
         <article v-for="item in predictionRows" :key="item.canonical_lottery_name" class="prediction-card">
@@ -92,8 +97,13 @@
             >
               <div class="window-head">
                 <strong>Sorteo {{ window.draw_time_local }}</strong>
-                <span>Patron de hoy: {{ window.observed_prefix.join(', ') || 'sin base aun' }}</span>
+                <span>
+                  Patron de hoy: {{ window.observed_prefix.join(', ') || 'sin base aun' }} |
+                  {{ window.daypart || 'sin tramo' }} |
+                  {{ countdownText(window.minutes_until) }}
+                </span>
               </div>
+              <p v-if="window.change_summary" class="window-change">{{ window.change_summary }}</p>
 
               <div class="candidate-list">
                 <div
@@ -104,7 +114,9 @@
                   <div>
                     <strong>{{ candidate.animal_number.toString().padStart(2, '0') }} {{ candidate.animal_name }}</strong>
                     <p>
-                      score {{ candidate.score.toFixed(2) }} | coincid {{ candidate.coincidence_hits }} | trans {{ candidate.transition_hits }}
+                      score {{ candidate.score.toFixed(2) }} | coincid {{ candidate.coincidence_hits }} |
+                      trans {{ candidate.transition_hits }} | pareja {{ candidate.pair_context_hits }} |
+                      trio {{ candidate.trio_context_hits }} | delta {{ formatDelta(candidate.rank_delta) }}
                     </p>
                   </div>
                   <span class="score-chip">{{ candidate.slot_hits }}</span>
@@ -152,8 +164,18 @@ async function refreshNow() {
   await Promise.all([
     lotteryStore.fetchOverview(),
     lotteryStore.fetchTodayResults(),
-    lotteryStore.fetchPossibleResults({ top_n: 5 }),
+    lotteryStore.fetchPossibleResults({ top_n: 10 }),
   ])
+}
+
+function countdownText(value) {
+  if (value === null || value === undefined) return 'sin countdown'
+  return value <= 0 ? 'sorteo en curso' : `faltan ${value} min`
+}
+
+function formatDelta(value) {
+  if (value === null || value === undefined || value === 0) return '0'
+  return value > 0 ? `+${value}` : `${value}`
 }
 
 onMounted(async () => {
@@ -223,6 +245,21 @@ onUnmounted(() => {
   background: rgba(255, 107, 107, 0.12);
   border: 1px solid rgba(255, 107, 107, 0.22);
   color: #ffd0d0;
+}
+
+.change-banner,
+.window-change {
+  margin-top: 0.85rem;
+  padding: 0.8rem 1rem;
+  border-radius: 16px;
+  background: rgba(88, 209, 255, 0.08);
+  border: 1px solid rgba(88, 209, 255, 0.12);
+  color: var(--text-soft);
+}
+
+.change-banner strong {
+  color: #eaf6ff;
+  margin-right: 0.5rem;
 }
 
 .monitor-grid,

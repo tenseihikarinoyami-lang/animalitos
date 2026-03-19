@@ -89,3 +89,54 @@ def test_possible_results_summary_prioritizes_recent_and_frequent_animals():
     assert lotto_activo.candidates
     assert lotto_activo.candidates[0].animal_number == 12
     assert lotto_activo.history_results_considered >= 8
+    assert lotto_activo.top_10
+    assert lotto_activo.draw_predictions[0].candidates[0].score_breakdown
+    assert summary.baseline_methodology_version == analytics_service.BASELINE_METHODOLOGY_VERSION
+
+
+def test_backtesting_summary_exposes_baseline_metrics():
+    today = local_now().date()
+    seed = []
+    for day_offset, animal_number in enumerate([12, 12, 25, 12, 33, 12, 45, 12, 12, 7, 25, 12, 33, 12, 21]):
+        seed.append(_sample_result(today - timedelta(days=day_offset), "08:00", animal_number, "Lotto Activo"))
+    db_service.upsert_results(seed)
+
+    summary = analytics_service.build_backtesting_summary(days=30)
+
+    assert summary.baseline_methodology_version == analytics_service.BASELINE_METHODOLOGY_VERSION
+    assert summary.by_lottery
+    assert summary.by_lottery[0].baseline_top_3_rate >= 0
+    assert isinstance(summary.beats_baseline, bool)
+
+
+@pytest.mark.asyncio
+async def test_pre_draw_alerts_send_once(monkeypatch):
+    today = local_now().date()
+    seed = [
+        _sample_result(today, "08:00", 12, "Lotto Activo"),
+        _sample_result(today, "09:00", 25, "Lotto Activo"),
+        _sample_result(today - timedelta(days=1), "08:00", 12, "Lotto Activo"),
+        _sample_result(today - timedelta(days=1), "09:00", 25, "Lotto Activo"),
+        _sample_result(today - timedelta(days=2), "08:00", 12, "Lotto Activo"),
+        _sample_result(today - timedelta(days=2), "09:00", 33, "Lotto Activo"),
+    ]
+    db_service.upsert_results(seed)
+
+    sent_alerts = []
+
+    async def fake_send(alerts):
+        sent_alerts.append(alerts)
+        return True
+
+    monkeypatch.setattr("app.services.monitoring.telegram_service.send_pre_draw_alerts", fake_send)
+
+    reference_local = local_now().replace(hour=9, minute=55, second=0, microsecond=0)
+    summary = analytics_service.build_possible_results_summary(reference_local=reference_local)
+
+    first = await monitoring_service.send_due_pre_draw_alerts(summary=summary)
+    second = await monitoring_service.send_due_pre_draw_alerts(summary=summary)
+
+    assert first["sent"] is True
+    assert first["alerts"]
+    assert second["sent"] is False
+    assert len(sent_alerts) == 1

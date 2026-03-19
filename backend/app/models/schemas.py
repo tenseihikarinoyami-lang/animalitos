@@ -142,6 +142,14 @@ class PossibleResultCandidate(BaseModel):
     remaining_time_hits: int
     draws_since_last_seen: int
     seen_today: bool = False
+    weekday_slot_hits: int = 0
+    daypart_hits: int = 0
+    pair_context_hits: int = 0
+    trio_context_hits: int = 0
+    exact_context_hits: int = 0
+    same_day_repeat_hits: int = 0
+    score_breakdown: dict[str, float] = Field(default_factory=dict)
+    rank_delta: int | None = None
 
 
 class DrawPredictionCandidate(BaseModel):
@@ -155,11 +163,23 @@ class DrawPredictionCandidate(BaseModel):
     overall_hits: int
     recent_hits: int
     draws_since_last_seen: int
+    weekday_slot_hits: int = 0
+    daypart_hits: int = 0
+    pair_context_hits: int = 0
+    trio_context_hits: int = 0
+    exact_context_hits: int = 0
+    same_day_repeat_hits: int = 0
+    score_breakdown: dict[str, float] = Field(default_factory=dict)
+    rank_delta: int | None = None
 
 
 class DrawPredictionWindow(BaseModel):
     draw_time_local: str
     observed_prefix: list[int] = Field(default_factory=list)
+    minutes_until: int | None = None
+    daypart: str | None = None
+    top_candidate_changed: bool = False
+    change_summary: str | None = None
     candidates: list[DrawPredictionCandidate]
 
 
@@ -172,18 +192,25 @@ class LotteryPossibleResults(BaseModel):
     next_draw_time_local: str | None = None
     target_draw_times: list[str] = Field(default_factory=list)
     candidates: list[PossibleResultCandidate]
+    top_3: list[PossibleResultCandidate] = Field(default_factory=list)
+    top_5: list[PossibleResultCandidate] = Field(default_factory=list)
+    top_10: list[PossibleResultCandidate] = Field(default_factory=list)
     draw_predictions: list[DrawPredictionWindow] = Field(default_factory=list)
 
 
 class PossibleResultsSummary(BaseModel):
     generated_at: datetime
+    reference_date: date | None = None
+    reference_time_local: str | None = None
     methodology_version: str
     methodology: str
     disclaimer: str
+    baseline_methodology_version: str | None = None
     history_days_covered: int
     history_results_considered: int
     score_components: list[ScoreComponent]
     last_backfill_at: datetime | None = None
+    change_alerts: list[str] = Field(default_factory=list)
     lotteries: list[LotteryPossibleResults]
 
 
@@ -239,6 +266,16 @@ class BacktestingHourMetric(BaseModel):
     top_1_hits: int
     top_3_hits: int
     top_5_hits: int
+    top_1_rate: float = 0
+    top_3_rate: float = 0
+    top_5_rate: float = 0
+    baseline_top_1_hits: int = 0
+    baseline_top_3_hits: int = 0
+    baseline_top_5_hits: int = 0
+    baseline_top_1_rate: float = 0
+    baseline_top_3_rate: float = 0
+    baseline_top_5_rate: float = 0
+    beats_baseline: bool = False
 
 
 class BacktestingLotteryMetric(BaseModel):
@@ -250,16 +287,29 @@ class BacktestingLotteryMetric(BaseModel):
     top_1_rate: float
     top_3_rate: float
     top_5_rate: float
+    baseline_top_1_hits: int = 0
+    baseline_top_3_hits: int = 0
+    baseline_top_5_hits: int = 0
+    baseline_top_1_rate: float = 0
+    baseline_top_3_rate: float = 0
+    baseline_top_5_rate: float = 0
+    lift_top_3: float = 0
+    beats_baseline: bool = False
 
 
 class BacktestingSummary(BaseModel):
     generated_at: datetime
     days: int
     methodology_version: str
+    baseline_methodology_version: str | None = None
     overall_total_draws: int
     overall_top_1_rate: float
     overall_top_3_rate: float
     overall_top_5_rate: float
+    baseline_overall_top_1_rate: float = 0
+    baseline_overall_top_3_rate: float = 0
+    baseline_overall_top_5_rate: float = 0
+    beats_baseline: bool = False
     by_lottery: list[BacktestingLotteryMetric]
     by_hour: list[BacktestingHourMetric]
 

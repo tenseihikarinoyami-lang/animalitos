@@ -1,9 +1,11 @@
 from collections import Counter, defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
 from app.core.config import settings
 from app.core.lottery_catalog import EXPECTED_RESULTS_PER_DAY, PRIMARY_LOTTERIES
 from app.models.schemas import (
+    ANIMALITOS_MAP,
     AnalyticsTrends,
     AuditLogEntry,
     BacktestingHourMetric,
@@ -22,6 +24,7 @@ from app.models.schemas import (
     ScoreComponent,
     SystemStatusResponse,
     TrendBucket,
+    get_animal_name,
 )
 from app.services.database import db_service
 from app.services.schedule import build_next_draw, expected_draws_by_now, local_now, parse_time_local, utc_now
@@ -29,19 +32,28 @@ from app.services.telegram import telegram_service
 
 
 SCORE_COMPONENTS = [
-    ScoreComponent(key="recent_slot_frequency", label="Frecuencia reciente por hora", weight=0.24),
-    ScoreComponent(key="historical_slot_frequency", label="Frecuencia historica por hora", weight=0.22),
-    ScoreComponent(key="transition_match", label="Transicion desde el ultimo resultado", weight=0.18),
-    ScoreComponent(key="coincidence_match", label="Coincidencia con el patron del dia", weight=0.16),
-    ScoreComponent(key="recent_frequency", label="Frecuencia reciente global", weight=0.12),
-    ScoreComponent(key="historical_frequency", label="Frecuencia historica global", weight=0.05),
-    ScoreComponent(key="overdue_gap", label="Rezago desde ultima aparicion", weight=0.03),
+    ScoreComponent(key="slot_recent_14d", label="Frecuencia reciente por hora (14d)", weight=0.16),
+    ScoreComponent(key="slot_historical_90d", label="Frecuencia historica por hora (90d)", weight=0.10),
+    ScoreComponent(key="weekday_slot_frequency", label="Coincidencia por dia de semana y hora", weight=0.08),
+    ScoreComponent(key="daypart_frequency", label="Frecuencia por tramo del dia", weight=0.06),
+    ScoreComponent(key="recent_frequency_7d", label="Frecuencia global reciente (7d)", weight=0.08),
+    ScoreComponent(key="recent_frequency_30d", label="Frecuencia global reciente (30d)", weight=0.06),
+    ScoreComponent(key="historical_frequency_90d", label="Frecuencia global historica (90d)", weight=0.04),
+    ScoreComponent(key="last_transition", label="Transicion desde el ultimo resultado", weight=0.10),
+    ScoreComponent(key="pair_context", label="Pareja previa coincidente", weight=0.08),
+    ScoreComponent(key="trio_context", label="Trio previo coincidente", weight=0.06),
+    ScoreComponent(key="prefix_overlap", label="Coincidencias con el patron del dia", weight=0.08),
+    ScoreComponent(key="exact_prefix_match", label="Ruta exacta del dia", weight=0.04),
+    ScoreComponent(key="overdue_gap", label="Rezago desde ultima aparicion", weight=0.04),
+    ScoreComponent(key="same_day_repeat_pattern", label="Patron de repeticion intradia", weight=0.02),
 ]
 
 
 class AnalyticsService:
-    METHODOLOGY_VERSION = "ops-coincidence-v3"
+    METHODOLOGY_VERSION = "ops-intraday-ranking-v4"
+    BASELINE_METHODOLOGY_VERSION = "frequency-baseline-v1"
     MINIMUM_BACKTEST_HISTORY = 10
+    FULL_TOP_N = 10
 
     @staticmethod
     def _coerce_datetime(value) -> datetime:
@@ -58,6 +70,37 @@ class AnalyticsService:
         if hasattr(value, "isoformat"):
             return value.isoformat()
         return str(value)
+
+    @staticmethod
+    def _daypart_for_time(draw_time_local: str) -> str:
+        hour = parse_time_local(draw_time_local).hour
+        if hour < 12:
+            return "manana"
+        if hour < 16:
+            return "tarde"
+        return "noche"
+
+    @staticmethod
+    def _normalize(value: int | float, maximum: int | float) -> float:
+        if not maximum:
+            return 0.0
+        return float(value) / float(maximum)
+
+    @staticmethod
+    def _candidate_sort_key(candidate: DrawPredictionCandidate):
+        return (
+            candidate.score,
+            candidate.exact_context_hits,
+            candidate.trio_context_hits,
+            candidate.pair_context_hits,
+            candidate.transition_hits,
+            candidate.coincidence_hits,
+            candidate.recent_slot_hits,
+            candidate.slot_hits,
+            candidate.recent_hits,
+            candidate.overall_hits,
+            candidate.draws_since_last_seen,
+        )
 
     def _normalize_lotteries(self, lotteries: list[str] | None = None) -> list[str]:
         if not lotteries:
@@ -88,25 +131,84 @@ class AnalyticsService:
             grouped[self._coerce_date_string(result["draw_date"])].append(result)
         return {draw_date: self._sort_results(items) for draw_date, items in grouped.items()}
 
-    def _build_draw_prediction_window(
+    def _all_animal_keys(self) -> list[tuple[int, str]]:
+        return [(animal_number, animal_name) for animal_number, animal_name in sorted(ANIMALITOS_MAP.items())]
+
+    def _window_cutoffs(self, reference_local: datetime) -> dict[str, datetime]:
+        return {
+            "7d": reference_local - timedelta(days=7),
+            "14d": reference_local - timedelta(days=14),
+            "30d": reference_local - timedelta(days=30),
+            "90d": reference_local - timedelta(days=90),
+        }
+
+    def _build_global_counters(
+        self,
+        results_desc: list[dict],
+        reference_local: datetime,
+        target_daypart: str,
+    ) -> dict[str, Any]:
+        reference_utc = reference_local.astimezone(timezone.utc)
+        cutoffs = self._window_cutoffs(reference_local)
+        counters = {
+            "recent_7d": Counter(),
+            "recent_30d": Counter(),
+            "historical_90d": Counter(),
+            "daypart": Counter(),
+            "last_seen_draws": {},
+            "unique_dates": set(),
+        }
+
+        for index, result in enumerate(results_desc):
+            draw_dt = self._coerce_datetime(result["draw_datetime_utc"])
+            if draw_dt > reference_utc:
+                continue
+
+            key = (result["animal_number"], get_animal_name(result["animal_number"]))
+            draw_date = self._coerce_date_string(result["draw_date"])
+            counters["unique_dates"].add(draw_date)
+
+            if draw_dt >= cutoffs["90d"]:
+                counters["historical_90d"][key] += 1
+            if draw_dt >= cutoffs["30d"]:
+                counters["recent_30d"][key] += 1
+            if draw_dt >= cutoffs["7d"]:
+                counters["recent_7d"][key] += 1
+            if self._daypart_for_time(result["draw_time_local"]) == target_daypart:
+                counters["daypart"][key] += 1
+
+            if key not in counters["last_seen_draws"]:
+                counters["last_seen_draws"][key] = index
+
+        return counters
+
+    def _build_window_counters(
         self,
         target_draw_time: str,
         today_results: list[dict],
         historical_days: dict[str, list[dict]],
-        overall_counter: Counter,
-        recent_counter: Counter,
-        last_seen_draws: dict,
-        recent_cutoff: datetime,
-        top_n: int,
-    ) -> DrawPredictionWindow:
-        slot_counter = Counter()
-        recent_slot_counter = Counter()
-        transition_counter = Counter()
-        coincidence_counter = Counter()
+        reference_local: datetime,
+    ) -> dict[str, Counter]:
+        target_weekday = reference_local.weekday()
+        cutoffs = self._window_cutoffs(reference_local)
+        counters = {
+            "slot_recent_14d": Counter(),
+            "slot_historical_90d": Counter(),
+            "weekday_slot": Counter(),
+            "last_transition": Counter(),
+            "pair_context": Counter(),
+            "trio_context": Counter(),
+            "prefix_overlap": Counter(),
+            "exact_prefix": Counter(),
+            "same_day_repeat": Counter(),
+        }
 
         observed_prefix_results = [item for item in today_results if item["draw_time_local"] < target_draw_time]
         observed_prefix = [item["animal_number"] for item in observed_prefix_results]
-        last_today_number = observed_prefix[-1] if observed_prefix else None
+        observed_set = set(observed_prefix)
+        last_one = observed_prefix[-1:] if observed_prefix else []
+        last_two = observed_prefix[-2:] if len(observed_prefix) >= 2 else []
+        last_three = observed_prefix[-3:] if len(observed_prefix) >= 3 else []
 
         for day_items in historical_days.values():
             by_time = {item["draw_time_local"]: item for item in day_items}
@@ -114,82 +216,292 @@ class AnalyticsService:
             if not target_item:
                 continue
 
-            target_key = (target_item["animal_number"], target_item["animal_name"])
-            slot_counter[target_key] += 1
-            if self._coerce_datetime(target_item["draw_datetime_utc"]) >= recent_cutoff:
-                recent_slot_counter[target_key] += 1
-
-            before_items = [item for item in day_items if item["draw_time_local"] < target_draw_time]
-            if last_today_number is not None and before_items and before_items[-1]["animal_number"] == last_today_number:
-                transition_counter[target_key] += 1
-
-            if observed_prefix:
-                historical_prefix_numbers = {item["animal_number"] for item in before_items}
-                overlap = len(set(observed_prefix) & historical_prefix_numbers)
-                if overlap > 0:
-                    coincidence_counter[target_key] += overlap
-
-        slot_max = max(slot_counter.values(), default=1)
-        recent_slot_max = max(recent_slot_counter.values(), default=1)
-        transition_max = max(transition_counter.values(), default=1)
-        coincidence_max = max(coincidence_counter.values(), default=1)
-        overall_max = max(overall_counter.values(), default=1)
-        recent_max = max(recent_counter.values(), default=1)
-        overdue_max = max(last_seen_draws.values(), default=0) or 1
-
-        candidate_keys = set(overall_counter) | set(slot_counter) | set(transition_counter) | set(coincidence_counter)
-        candidates = []
-        for animal_number, animal_name in candidate_keys:
-            overall_hits = overall_counter.get((animal_number, animal_name), 0)
-            recent_hits = recent_counter.get((animal_number, animal_name), 0)
-            slot_hits = slot_counter.get((animal_number, animal_name), 0)
-            recent_slot_hits = recent_slot_counter.get((animal_number, animal_name), 0)
-            transition_hits = transition_counter.get((animal_number, animal_name), 0)
-            coincidence_hits = coincidence_counter.get((animal_number, animal_name), 0)
-            draws_since_last_seen = last_seen_draws.get((animal_number, animal_name), 0)
-
-            score = (
-                (recent_slot_hits / recent_slot_max) * 0.24
-                + (slot_hits / slot_max) * 0.22
-                + (transition_hits / transition_max) * 0.18
-                + (coincidence_hits / coincidence_max) * 0.16
-                + (recent_hits / recent_max) * 0.12
-                + (overall_hits / overall_max) * 0.05
-                + (draws_since_last_seen / overdue_max) * 0.03
+            target_key = (
+                target_item["animal_number"],
+                get_animal_name(target_item["animal_number"]),
             )
+            target_dt = self._coerce_datetime(target_item["draw_datetime_utc"])
+            if target_dt >= cutoffs["90d"]:
+                counters["slot_historical_90d"][target_key] += 1
+            if target_dt >= cutoffs["14d"]:
+                counters["slot_recent_14d"][target_key] += 1
+            if target_dt.astimezone(reference_local.tzinfo).weekday() == target_weekday:
+                counters["weekday_slot"][target_key] += 1
 
+            historical_prefix_items = [item for item in day_items if item["draw_time_local"] < target_draw_time]
+            historical_prefix_numbers = [item["animal_number"] for item in historical_prefix_items]
+
+            if last_one and historical_prefix_numbers[-1:] == last_one:
+                counters["last_transition"][target_key] += 1
+            if last_two and historical_prefix_numbers[-2:] == last_two:
+                counters["pair_context"][target_key] += 1
+            if last_three and historical_prefix_numbers[-3:] == last_three:
+                counters["trio_context"][target_key] += 1
+            if observed_prefix:
+                overlap = len(observed_set.intersection(historical_prefix_numbers))
+                if overlap:
+                    counters["prefix_overlap"][target_key] += overlap
+                if historical_prefix_numbers[: len(observed_prefix)] == observed_prefix:
+                    counters["exact_prefix"][target_key] += 1
+                if (
+                    target_item["animal_number"] in observed_set
+                    and target_item["animal_number"] in historical_prefix_numbers
+                ):
+                    counters["same_day_repeat"][target_key] += 1
+
+        return counters
+
+    def _build_draw_prediction_window(
+        self,
+        target_draw_time: str,
+        today_results: list[dict],
+        historical_days: dict[str, list[dict]],
+        global_counters: dict[str, Any],
+        reference_local: datetime,
+        top_n: int,
+    ) -> DrawPredictionWindow:
+        target_daypart = self._daypart_for_time(target_draw_time)
+        window_counters = self._build_window_counters(
+            target_draw_time=target_draw_time,
+            today_results=today_results,
+            historical_days=historical_days,
+            reference_local=reference_local,
+        )
+
+        observed_prefix_results = [item for item in today_results if item["draw_time_local"] < target_draw_time]
+        observed_prefix = [item["animal_number"] for item in observed_prefix_results]
+
+        maxima = {
+            "slot_recent_14d": max(window_counters["slot_recent_14d"].values(), default=1),
+            "slot_historical_90d": max(window_counters["slot_historical_90d"].values(), default=1),
+            "weekday_slot_frequency": max(window_counters["weekday_slot"].values(), default=1),
+            "daypart_frequency": max(global_counters["daypart"].values(), default=1),
+            "recent_frequency_7d": max(global_counters["recent_7d"].values(), default=1),
+            "recent_frequency_30d": max(global_counters["recent_30d"].values(), default=1),
+            "historical_frequency_90d": max(global_counters["historical_90d"].values(), default=1),
+            "last_transition": max(window_counters["last_transition"].values(), default=1),
+            "pair_context": max(window_counters["pair_context"].values(), default=1),
+            "trio_context": max(window_counters["trio_context"].values(), default=1),
+            "prefix_overlap": max(window_counters["prefix_overlap"].values(), default=1),
+            "exact_prefix_match": max(window_counters["exact_prefix"].values(), default=1),
+            "overdue_gap": max(global_counters["last_seen_draws"].values(), default=1) or 1,
+            "same_day_repeat_pattern": max(window_counters["same_day_repeat"].values(), default=1),
+        }
+
+        candidates: list[DrawPredictionCandidate] = []
+        for animal_number, animal_name in self._all_animal_keys():
+            key = (animal_number, animal_name)
+            score_breakdown = {
+                "slot_recent_14d": round(
+                    self._normalize(window_counters["slot_recent_14d"].get(key, 0), maxima["slot_recent_14d"])
+                    * 0.16
+                    * 100,
+                    2,
+                ),
+                "slot_historical_90d": round(
+                    self._normalize(window_counters["slot_historical_90d"].get(key, 0), maxima["slot_historical_90d"])
+                    * 0.10
+                    * 100,
+                    2,
+                ),
+                "weekday_slot_frequency": round(
+                    self._normalize(window_counters["weekday_slot"].get(key, 0), maxima["weekday_slot_frequency"])
+                    * 0.08
+                    * 100,
+                    2,
+                ),
+                "daypart_frequency": round(
+                    self._normalize(global_counters["daypart"].get(key, 0), maxima["daypart_frequency"]) * 0.06 * 100,
+                    2,
+                ),
+                "recent_frequency_7d": round(
+                    self._normalize(global_counters["recent_7d"].get(key, 0), maxima["recent_frequency_7d"]) * 0.08 * 100,
+                    2,
+                ),
+                "recent_frequency_30d": round(
+                    self._normalize(global_counters["recent_30d"].get(key, 0), maxima["recent_frequency_30d"])
+                    * 0.06
+                    * 100,
+                    2,
+                ),
+                "historical_frequency_90d": round(
+                    self._normalize(global_counters["historical_90d"].get(key, 0), maxima["historical_frequency_90d"])
+                    * 0.04
+                    * 100,
+                    2,
+                ),
+                "last_transition": round(
+                    self._normalize(window_counters["last_transition"].get(key, 0), maxima["last_transition"])
+                    * 0.10
+                    * 100,
+                    2,
+                ),
+                "pair_context": round(
+                    self._normalize(window_counters["pair_context"].get(key, 0), maxima["pair_context"]) * 0.08 * 100,
+                    2,
+                ),
+                "trio_context": round(
+                    self._normalize(window_counters["trio_context"].get(key, 0), maxima["trio_context"]) * 0.06 * 100,
+                    2,
+                ),
+                "prefix_overlap": round(
+                    self._normalize(window_counters["prefix_overlap"].get(key, 0), maxima["prefix_overlap"])
+                    * 0.08
+                    * 100,
+                    2,
+                ),
+                "exact_prefix_match": round(
+                    self._normalize(window_counters["exact_prefix"].get(key, 0), maxima["exact_prefix_match"])
+                    * 0.04
+                    * 100,
+                    2,
+                ),
+                "overdue_gap": round(
+                    self._normalize(global_counters["last_seen_draws"].get(key, 0), maxima["overdue_gap"]) * 0.04 * 100,
+                    2,
+                ),
+                "same_day_repeat_pattern": round(
+                    self._normalize(window_counters["same_day_repeat"].get(key, 0), maxima["same_day_repeat_pattern"])
+                    * 0.02
+                    * 100,
+                    2,
+                ),
+            }
             candidates.append(
                 DrawPredictionCandidate(
                     animal_number=animal_number,
                     animal_name=animal_name,
-                    score=round(score * 100, 2),
-                    slot_hits=slot_hits,
-                    recent_slot_hits=recent_slot_hits,
-                    transition_hits=transition_hits,
-                    coincidence_hits=coincidence_hits,
-                    overall_hits=overall_hits,
-                    recent_hits=recent_hits,
-                    draws_since_last_seen=draws_since_last_seen,
+                    score=round(sum(score_breakdown.values()), 2),
+                    slot_hits=window_counters["slot_historical_90d"].get(key, 0),
+                    recent_slot_hits=window_counters["slot_recent_14d"].get(key, 0),
+                    transition_hits=window_counters["last_transition"].get(key, 0),
+                    coincidence_hits=window_counters["prefix_overlap"].get(key, 0),
+                    overall_hits=global_counters["historical_90d"].get(key, 0),
+                    recent_hits=global_counters["recent_30d"].get(key, 0),
+                    draws_since_last_seen=global_counters["last_seen_draws"].get(key, 0),
+                    weekday_slot_hits=window_counters["weekday_slot"].get(key, 0),
+                    daypart_hits=global_counters["daypart"].get(key, 0),
+                    pair_context_hits=window_counters["pair_context"].get(key, 0),
+                    trio_context_hits=window_counters["trio_context"].get(key, 0),
+                    exact_context_hits=window_counters["exact_prefix"].get(key, 0),
+                    same_day_repeat_hits=window_counters["same_day_repeat"].get(key, 0),
+                    score_breakdown=score_breakdown,
                 )
             )
 
-        candidates.sort(
-            key=lambda item: (
-                item.score,
-                item.transition_hits,
-                item.coincidence_hits,
-                item.recent_slot_hits,
-                item.slot_hits,
-                item.recent_hits,
-            ),
-            reverse=True,
-        )
+        candidates.sort(key=self._candidate_sort_key, reverse=True)
+        minutes_until = None
+        parsed = parse_time_local(target_draw_time)
+        candidate_local = reference_local.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
+        if candidate_local >= reference_local:
+            minutes_until = max(int((candidate_local - reference_local).total_seconds() // 60), 0)
 
         return DrawPredictionWindow(
             draw_time_local=target_draw_time,
             observed_prefix=observed_prefix,
-            candidates=candidates[:top_n],
+            minutes_until=minutes_until,
+            daypart=target_daypart,
+            candidates=candidates[: max(top_n, self.FULL_TOP_N)],
         )
+
+    def _candidate_to_possible(self, candidate: DrawPredictionCandidate, seen_today: bool) -> PossibleResultCandidate:
+        return PossibleResultCandidate(
+            animal_number=candidate.animal_number,
+            animal_name=candidate.animal_name,
+            score=candidate.score,
+            overall_hits=candidate.overall_hits,
+            recent_hits=candidate.recent_hits,
+            remaining_time_hits=candidate.slot_hits,
+            draws_since_last_seen=candidate.draws_since_last_seen,
+            seen_today=seen_today,
+            weekday_slot_hits=candidate.weekday_slot_hits,
+            daypart_hits=candidate.daypart_hits,
+            pair_context_hits=candidate.pair_context_hits,
+            trio_context_hits=candidate.trio_context_hits,
+            exact_context_hits=candidate.exact_context_hits,
+            same_day_repeat_hits=candidate.same_day_repeat_hits,
+            score_breakdown=dict(candidate.score_breakdown),
+            rank_delta=candidate.rank_delta,
+        )
+
+    def _annotate_rank_deltas(
+        self,
+        current_candidates: list[DrawPredictionCandidate],
+        previous_candidates: list[dict] | None,
+    ) -> None:
+        if not previous_candidates:
+            return
+        previous_positions = {
+            item.get("animal_number"): index
+            for index, item in enumerate(previous_candidates)
+            if item.get("animal_number") is not None
+        }
+        for index, candidate in enumerate(current_candidates):
+            previous_index = previous_positions.get(candidate.animal_number)
+            if previous_index is not None:
+                candidate.rank_delta = previous_index - index
+
+    def _previous_window_maps(self, previous_summary: dict | None) -> tuple[dict[tuple[str, str], dict], dict[str, list[dict]]]:
+        window_map = {}
+        next_map = {}
+        for lottery in (previous_summary or {}).get("lotteries", []):
+            lottery_name = lottery.get("canonical_lottery_name")
+            next_map[lottery_name] = lottery.get("candidates", [])
+            for window in lottery.get("draw_predictions", []):
+                window_map[(lottery_name, window.get("draw_time_local"))] = window
+        return window_map, next_map
+
+    def _apply_change_tracking(self, summary: PossibleResultsSummary, previous_summary: dict | None) -> None:
+        if previous_summary and str(previous_summary.get("reference_date")) != str(summary.reference_date):
+            previous_summary = None
+        previous_window_map, previous_next_map = self._previous_window_maps(previous_summary)
+        change_alerts: list[str] = []
+
+        for lottery in summary.lotteries:
+            previous_next_candidates = previous_next_map.get(lottery.canonical_lottery_name)
+            current_top_candidates = lottery.draw_predictions[0].candidates if lottery.draw_predictions else []
+            self._annotate_rank_deltas(current_top_candidates, previous_next_candidates)
+
+            for window in lottery.draw_predictions:
+                previous_window = previous_window_map.get((lottery.canonical_lottery_name, window.draw_time_local))
+                self._annotate_rank_deltas(window.candidates, previous_window.get("candidates") if previous_window else None)
+                if previous_window and previous_window.get("candidates") and window.candidates:
+                    previous_top = previous_window["candidates"][0]["animal_number"]
+                    current_top = window.candidates[0].animal_number
+                    previous_top3 = {
+                        item.get("animal_number") for item in previous_window.get("candidates", [])[:3] if item.get("animal_number") is not None
+                    }
+                    current_top3 = {item.animal_number for item in window.candidates[:3]}
+                    if previous_top != current_top or previous_top3 != current_top3:
+                        window.top_candidate_changed = True
+                        if previous_top != current_top:
+                            window.change_summary = (
+                                f"Cambia el lider de {previous_top:02d} a {current_top:02d} para {window.draw_time_local}."
+                            )
+                        else:
+                            window.change_summary = f"Se reordeno el top 3 para {window.draw_time_local}."
+                        change_alerts.append(f"{lottery.canonical_lottery_name} {window.change_summary}")
+
+            if lottery.draw_predictions:
+                observed_today = set(lottery.draw_predictions[0].observed_prefix)
+                lottery.candidates = [
+                    self._candidate_to_possible(candidate, candidate.animal_number in observed_today)
+                    for candidate in lottery.draw_predictions[0].candidates[: len(lottery.candidates)]
+                ]
+                lottery.top_3 = [
+                    self._candidate_to_possible(candidate, candidate.animal_number in observed_today)
+                    for candidate in lottery.draw_predictions[0].candidates[:3]
+                ]
+                lottery.top_5 = [
+                    self._candidate_to_possible(candidate, candidate.animal_number in observed_today)
+                    for candidate in lottery.draw_predictions[0].candidates[:5]
+                ]
+                lottery.top_10 = [
+                    self._candidate_to_possible(candidate, candidate.animal_number in observed_today)
+                    for candidate in lottery.draw_predictions[0].candidates[:10]
+                ]
+
+        summary.change_alerts = change_alerts[:10]
 
     def _build_candidates_for_reference(
         self,
@@ -205,60 +517,52 @@ class AnalyticsService:
         sorted_desc = self._sort_results(results, reverse=True)
         sorted_asc = list(reversed(sorted_desc))
         reference_date_str = reference_local.date().isoformat()
-        recent_cutoff = reference_local - timedelta(days=min(settings.analytics_default_days, 21))
         target_draw_times = self._get_target_draw_times(schedule, reference_local)
-
-        overall_counter = Counter()
-        recent_counter = Counter()
-        last_seen_draws = {}
-        date_span = set()
-
-        for index, result in enumerate(sorted_desc):
-            key = (result["animal_number"], result.get("animal_name") or f"Animal {result['animal_number']:02d}")
-            draw_dt = self._coerce_datetime(result["draw_datetime_utc"])
-            draw_date = self._coerce_date_string(result["draw_date"])
-            overall_counter[key] += 1
-            if draw_dt >= recent_cutoff:
-                recent_counter[key] += 1
-            date_span.add(draw_date)
-            if key not in last_seen_draws:
-                last_seen_draws[key] = index
-
         today_results = [item for item in sorted_asc if self._coerce_date_string(item["draw_date"]) == reference_date_str]
         historical_days = {
             draw_date: items
             for draw_date, items in self._group_results_by_day(results).items()
             if draw_date != reference_date_str
         }
+        date_span = {self._coerce_date_string(result["draw_date"]) for result in results}
 
-        draw_predictions = [
-            self._build_draw_prediction_window(
-                target_draw_time=draw_time_local,
-                today_results=today_results,
-                historical_days=historical_days,
-                overall_counter=overall_counter,
-                recent_counter=recent_counter,
-                last_seen_draws=last_seen_draws,
-                recent_cutoff=recent_cutoff,
-                top_n=top_n,
+        draw_predictions = []
+        for target_draw_time in target_draw_times:
+            global_counters = self._build_global_counters(
+                results_desc=sorted_desc,
+                reference_local=reference_local,
+                target_daypart=self._daypart_for_time(target_draw_time),
             )
-            for draw_time_local in target_draw_times
-        ]
+            draw_predictions.append(
+                self._build_draw_prediction_window(
+                    target_draw_time=target_draw_time,
+                    today_results=today_results,
+                    historical_days=historical_days,
+                    global_counters=global_counters,
+                    reference_local=reference_local,
+                    top_n=top_n,
+                )
+            )
 
         next_draw = build_next_draw(schedule, reference_local) if schedule else None
-        next_candidates = draw_predictions[0].candidates if draw_predictions else []
+        next_window = draw_predictions[0] if draw_predictions else None
+        observed_today = set(next_window.observed_prefix if next_window else [])
+
         candidates = [
-            PossibleResultCandidate(
-                animal_number=item.animal_number,
-                animal_name=item.animal_name,
-                score=item.score,
-                overall_hits=item.overall_hits,
-                recent_hits=item.recent_hits,
-                remaining_time_hits=item.slot_hits,
-                draws_since_last_seen=item.draws_since_last_seen,
-                seen_today=item.animal_number in {result["animal_number"] for result in today_results},
-            )
-            for item in next_candidates
+            self._candidate_to_possible(candidate, candidate.animal_number in observed_today)
+            for candidate in (next_window.candidates[:top_n] if next_window else [])
+        ]
+        top_3 = [
+            self._candidate_to_possible(candidate, candidate.animal_number in observed_today)
+            for candidate in (next_window.candidates[:3] if next_window else [])
+        ]
+        top_5 = [
+            self._candidate_to_possible(candidate, candidate.animal_number in observed_today)
+            for candidate in (next_window.candidates[:5] if next_window else [])
+        ]
+        top_10 = [
+            self._candidate_to_possible(candidate, candidate.animal_number in observed_today)
+            for candidate in (next_window.candidates[:10] if next_window else [])
         ]
 
         return LotteryPossibleResults(
@@ -270,8 +574,61 @@ class AnalyticsService:
             next_draw_time_local=next_draw["draw_time_local"] if next_draw else None,
             target_draw_times=target_draw_times,
             candidates=candidates,
+            top_3=top_3,
+            top_5=top_5,
+            top_10=top_10,
             draw_predictions=draw_predictions,
         )
+
+    def _build_frequency_baseline_ranking(
+        self,
+        history: list[dict],
+        target_draw_time: str,
+        reference_local: datetime,
+        top_n: int,
+    ) -> list[int]:
+        if not history:
+            return []
+
+        sorted_desc = self._sort_results(history, reverse=True)
+        cutoffs = self._window_cutoffs(reference_local)
+        slot_counter = Counter()
+        recent_counter = Counter()
+        overall_counter = Counter()
+        last_seen_draws = {}
+
+        for index, result in enumerate(sorted_desc):
+            key = result["animal_number"]
+            draw_dt = self._coerce_datetime(result["draw_datetime_utc"])
+            overall_counter[key] += 1
+            if result["draw_time_local"] == target_draw_time:
+                slot_counter[key] += 1
+            if draw_dt >= cutoffs["30d"]:
+                recent_counter[key] += 1
+            if key not in last_seen_draws:
+                last_seen_draws[key] = index
+
+        slot_max = max(slot_counter.values(), default=1)
+        recent_max = max(recent_counter.values(), default=1)
+        overall_max = max(overall_counter.values(), default=1)
+        overdue_max = max(last_seen_draws.values(), default=1) or 1
+
+        ranked = []
+        for animal_number, _animal_name in self._all_animal_keys():
+            ranked.append(
+                (
+                    (
+                        self._normalize(slot_counter.get(animal_number, 0), slot_max) * 0.5
+                        + self._normalize(recent_counter.get(animal_number, 0), recent_max) * 0.25
+                        + self._normalize(overall_counter.get(animal_number, 0), overall_max) * 0.2
+                        + self._normalize(last_seen_draws.get(animal_number, 0), overdue_max) * 0.05
+                    ),
+                    animal_number,
+                )
+            )
+
+        ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [animal_number for _score, animal_number in ranked[:top_n]]
 
     def build_dashboard_overview(self) -> DashboardOverview:
         now_local = local_now()
@@ -415,8 +772,10 @@ class AnalyticsService:
         top_n: int | None = None,
         lotteries: list[str] | None = None,
         reference_local: datetime | None = None,
+        previous_summary: dict | None = None,
     ) -> PossibleResultsSummary:
-        top_n = top_n or settings.prediction_default_top_n
+        requested_top_n = top_n or settings.prediction_default_top_n
+        full_top_n = max(requested_top_n, self.FULL_TOP_N)
         reference_local = reference_local or local_now()
         schedules = {item["canonical_lottery_name"]: item for item in db_service.get_schedules()}
         selected_lotteries = self._normalize_lotteries(lotteries)
@@ -432,28 +791,40 @@ class AnalyticsService:
                 results=results,
                 schedule=schedule,
                 reference_local=reference_local,
-                top_n=top_n,
+                top_n=full_top_n,
             )
             if lottery_summary:
+                lottery_summary.candidates = lottery_summary.candidates[:requested_top_n]
                 summary_items.append(lottery_summary)
                 total_history_results += lottery_summary.history_results_considered
                 unique_dates.update(self._coerce_date_string(result["draw_date"]) for result in results)
 
         latest_backfill = db_service.get_latest_backfill_run()
-        return PossibleResultsSummary(
+        summary = PossibleResultsSummary(
             generated_at=utc_now(),
+            reference_date=reference_local.date(),
+            reference_time_local=reference_local.strftime("%H:%M"),
             methodology_version=self.METHODOLOGY_VERSION,
             methodology=(
-                "Prediccion estadistica operativa basada en frecuencia por hora, transiciones entre sorteos, "
-                "coincidencias del patron del dia, frecuencia historica y rezago de aparicion."
+                "Ranking intradia por loteria, hora, dia de semana y tramo del dia. "
+                "Combina ventanas historicas de 7, 14, 30 y 90 dias con transiciones entre sorteos, "
+                "contexto de parejas y trios previos, coincidencias del patron observado hoy, "
+                "patrones de repeticion intradia y rezago desde la ultima aparicion."
             ),
-            disclaimer="Proyeccion estadistica. No garantiza aciertos ni reemplaza criterio operativo.",
+            disclaimer="Proyeccion estadistica operativa. No garantiza aciertos ni reemplaza criterio propio.",
+            baseline_methodology_version=self.BASELINE_METHODOLOGY_VERSION,
             history_days_covered=len(unique_dates),
             history_results_considered=total_history_results,
             score_components=list(SCORE_COMPONENTS),
             last_backfill_at=latest_backfill.get("completed_at") if latest_backfill else None,
             lotteries=summary_items,
         )
+
+        if previous_summary is None:
+            latest_prediction = db_service.get_latest_prediction_run()
+            previous_summary = latest_prediction.get("summary") if latest_prediction else None
+        self._apply_change_tracking(summary, previous_summary)
+        return summary
 
     def build_backtesting_summary(
         self,
@@ -469,8 +840,28 @@ class AnalyticsService:
         start_date = (now_local.date() - timedelta(days=days - 1)).isoformat()
         end_date = now_local.date().isoformat()
 
-        lottery_stats = defaultdict(lambda: {"total": 0, "top1": 0, "top3": 0, "top5": 0})
-        hour_stats = defaultdict(lambda: {"total": 0, "top1": 0, "top3": 0, "top5": 0})
+        lottery_stats = defaultdict(
+            lambda: {
+                "total": 0,
+                "top1": 0,
+                "top3": 0,
+                "top5": 0,
+                "baseline_top1": 0,
+                "baseline_top3": 0,
+                "baseline_top5": 0,
+            }
+        )
+        hour_stats = defaultdict(
+            lambda: {
+                "total": 0,
+                "top1": 0,
+                "top3": 0,
+                "top5": 0,
+                "baseline_top1": 0,
+                "baseline_top3": 0,
+                "baseline_top5": 0,
+            }
+        )
 
         for lottery_name in selected_lotteries:
             items = db_service.get_results(
@@ -500,7 +891,7 @@ class AnalyticsService:
                     results=history,
                     schedule=schedule,
                     reference_local=reference_local,
-                    top_n=top_n,
+                    top_n=max(top_n, self.FULL_TOP_N),
                 )
                 if not candidate_summary:
                     continue
@@ -514,14 +905,22 @@ class AnalyticsService:
                     None,
                 )
                 ranked_numbers = [
-                    candidate.animal_number for candidate in (target_window.candidates if target_window else candidate_summary.candidates)
+                    candidate.animal_number
+                    for candidate in (target_window.candidates if target_window else candidate_summary.candidates)
                 ]
+                baseline_ranked_numbers = self._build_frequency_baseline_ranking(
+                    history=history,
+                    target_draw_time=actual["draw_time_local"],
+                    reference_local=reference_local,
+                    top_n=max(top_n, 5),
+                )
+
                 actual_number = actual["animal_number"]
                 lottery_stats[lottery_name]["total"] += 1
                 hour_key = (lottery_name, actual["draw_time_local"])
                 hour_stats[hour_key]["total"] += 1
 
-                if ranked_numbers[:1] and actual_number in ranked_numbers[:1]:
+                if actual_number in ranked_numbers[:1]:
                     lottery_stats[lottery_name]["top1"] += 1
                     hour_stats[hour_key]["top1"] += 1
                 if actual_number in ranked_numbers[:3]:
@@ -531,11 +930,25 @@ class AnalyticsService:
                     lottery_stats[lottery_name]["top5"] += 1
                     hour_stats[hour_key]["top5"] += 1
 
+                if actual_number in baseline_ranked_numbers[:1]:
+                    lottery_stats[lottery_name]["baseline_top1"] += 1
+                    hour_stats[hour_key]["baseline_top1"] += 1
+                if actual_number in baseline_ranked_numbers[:3]:
+                    lottery_stats[lottery_name]["baseline_top3"] += 1
+                    hour_stats[hour_key]["baseline_top3"] += 1
+                if actual_number in baseline_ranked_numbers[:5]:
+                    lottery_stats[lottery_name]["baseline_top5"] += 1
+                    hour_stats[hour_key]["baseline_top5"] += 1
+
         by_lottery = []
         overall_total = 0
         overall_top1 = 0
         overall_top3 = 0
         overall_top5 = 0
+        baseline_overall_top1 = 0
+        baseline_overall_top3 = 0
+        baseline_overall_top5 = 0
+
         for lottery_name in selected_lotteries:
             stats = lottery_stats[lottery_name]
             total = stats["total"]
@@ -543,6 +956,11 @@ class AnalyticsService:
             overall_top1 += stats["top1"]
             overall_top3 += stats["top3"]
             overall_top5 += stats["top5"]
+            baseline_overall_top1 += stats["baseline_top1"]
+            baseline_overall_top3 += stats["baseline_top3"]
+            baseline_overall_top5 += stats["baseline_top5"]
+            top_3_rate = round((stats["top3"] / total) if total else 0, 4)
+            baseline_top_3_rate = round((stats["baseline_top3"] / total) if total else 0, 4)
             by_lottery.append(
                 BacktestingLotteryMetric(
                     lottery_name=lottery_name,
@@ -551,31 +969,60 @@ class AnalyticsService:
                     top_3_hits=stats["top3"],
                     top_5_hits=stats["top5"],
                     top_1_rate=round((stats["top1"] / total) if total else 0, 4),
-                    top_3_rate=round((stats["top3"] / total) if total else 0, 4),
+                    top_3_rate=top_3_rate,
                     top_5_rate=round((stats["top5"] / total) if total else 0, 4),
+                    baseline_top_1_hits=stats["baseline_top1"],
+                    baseline_top_3_hits=stats["baseline_top3"],
+                    baseline_top_5_hits=stats["baseline_top5"],
+                    baseline_top_1_rate=round((stats["baseline_top1"] / total) if total else 0, 4),
+                    baseline_top_3_rate=baseline_top_3_rate,
+                    baseline_top_5_rate=round((stats["baseline_top5"] / total) if total else 0, 4),
+                    lift_top_3=round(top_3_rate - baseline_top_3_rate, 4),
+                    beats_baseline=top_3_rate >= baseline_top_3_rate,
                 )
             )
 
-        by_hour = [
-            BacktestingHourMetric(
-                lottery_name=lottery_name,
-                draw_time_local=draw_time_local,
-                total_draws=stats["total"],
-                top_1_hits=stats["top1"],
-                top_3_hits=stats["top3"],
-                top_5_hits=stats["top5"],
+        by_hour = []
+        for (lottery_name, draw_time_local), stats in sorted(hour_stats.items(), key=lambda item: (item[0][0], item[0][1])):
+            total = stats["total"]
+            top_3_rate = round((stats["top3"] / total) if total else 0, 4)
+            baseline_top_3_rate = round((stats["baseline_top3"] / total) if total else 0, 4)
+            by_hour.append(
+                BacktestingHourMetric(
+                    lottery_name=lottery_name,
+                    draw_time_local=draw_time_local,
+                    total_draws=total,
+                    top_1_hits=stats["top1"],
+                    top_3_hits=stats["top3"],
+                    top_5_hits=stats["top5"],
+                    top_1_rate=round((stats["top1"] / total) if total else 0, 4),
+                    top_3_rate=top_3_rate,
+                    top_5_rate=round((stats["top5"] / total) if total else 0, 4),
+                    baseline_top_1_hits=stats["baseline_top1"],
+                    baseline_top_3_hits=stats["baseline_top3"],
+                    baseline_top_5_hits=stats["baseline_top5"],
+                    baseline_top_1_rate=round((stats["baseline_top1"] / total) if total else 0, 4),
+                    baseline_top_3_rate=baseline_top_3_rate,
+                    baseline_top_5_rate=round((stats["baseline_top5"] / total) if total else 0, 4),
+                    beats_baseline=top_3_rate >= baseline_top_3_rate,
+                )
             )
-            for (lottery_name, draw_time_local), stats in sorted(hour_stats.items(), key=lambda item: (item[0][0], item[0][1]))
-        ]
 
+        overall_top_3_rate = round((overall_top3 / overall_total) if overall_total else 0, 4)
+        baseline_overall_top_3_rate = round((baseline_overall_top3 / overall_total) if overall_total else 0, 4)
         return BacktestingSummary(
             generated_at=utc_now(),
             days=days,
             methodology_version=self.METHODOLOGY_VERSION,
+            baseline_methodology_version=self.BASELINE_METHODOLOGY_VERSION,
             overall_total_draws=overall_total,
             overall_top_1_rate=round((overall_top1 / overall_total) if overall_total else 0, 4),
-            overall_top_3_rate=round((overall_top3 / overall_total) if overall_total else 0, 4),
+            overall_top_3_rate=overall_top_3_rate,
             overall_top_5_rate=round((overall_top5 / overall_total) if overall_total else 0, 4),
+            baseline_overall_top_1_rate=round((baseline_overall_top1 / overall_total) if overall_total else 0, 4),
+            baseline_overall_top_3_rate=baseline_overall_top_3_rate,
+            baseline_overall_top_5_rate=round((baseline_overall_top5 / overall_total) if overall_total else 0, 4),
+            beats_baseline=overall_top_3_rate >= baseline_overall_top_3_rate,
             by_lottery=by_lottery,
             by_hour=by_hour,
         )

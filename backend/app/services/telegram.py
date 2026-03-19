@@ -124,9 +124,18 @@ class TelegramService:
             "<b>Animalitos Monitor</b>",
             "Posibles resultados de hoy segun tendencia estadistica.",
             "",
-            "Base: coincidencias historicas + transiciones + horarios + recencia.",
+            (
+                f"Base: {html.escape(summary.get('methodology_version', 'sin-version'))} | "
+                f"referencia {html.escape(str(summary.get('reference_time_local') or '--:--'))}."
+            ),
             "",
         ]
+
+        change_alerts = summary.get("change_alerts", [])
+        if change_alerts:
+            lines.append("<b>Cambios relevantes</b>")
+            lines.extend(f"- {html.escape(alert)}" for alert in change_alerts[:4])
+            lines.append("")
 
         for lottery in lotteries[:3]:
             lines.append(f"<b>{html.escape(lottery['canonical_lottery_name'])}</b>")
@@ -137,14 +146,42 @@ class TelegramService:
             next_window = (lottery.get("draw_predictions") or [{}])[0]
             candidates = next_window.get("candidates") or lottery.get("candidates", [])
             for candidate in candidates[:5]:
+                strongest_signal = max((candidate.get("score_breakdown") or {}).items(), key=lambda item: item[1], default=("n/a", 0))
                 lines.append(
                     f"- {candidate['animal_number']:02d} {html.escape(candidate['animal_name'])} | "
                     f"score {candidate['score']:.2f} | slot {candidate.get('slot_hits', candidate.get('remaining_time_hits', 0))} | "
-                    f"coinc {candidate.get('coincidence_hits', 0)} | trans {candidate.get('transition_hits', 0)}"
+                    f"coinc {candidate.get('coincidence_hits', 0)} | trans {candidate.get('transition_hits', 0)} | "
+                    f"senal {html.escape(strongest_signal[0])}"
                 )
             lines.append("")
 
         lines.append("Nota: reporte estadistico, no garantiza aciertos.")
+        return await self.send_message("\n".join(lines))
+
+    async def send_pre_draw_alerts(self, alerts: list[dict]) -> bool:
+        if not alerts:
+            return False
+
+        lines = [
+            "<b>Animalitos Monitor</b>",
+            "Alerta previa al siguiente sorteo.",
+            "",
+        ]
+        for alert in alerts[:4]:
+            lines.append(
+                f"<b>{html.escape(alert['lottery_name'])}</b> | sorteo {html.escape(alert['draw_time_local'])} "
+                f"en {alert['minutes_until']} min"
+            )
+            for candidate in alert.get("candidates", [])[:3]:
+                lines.append(
+                    f"- {candidate['animal_number']:02d} {html.escape(candidate['animal_name'])} | "
+                    f"score {candidate['score']:.2f} | top delta {candidate.get('rank_delta') or 0}"
+                )
+            if alert.get("change_summary"):
+                lines.append(f"  Cambio: {html.escape(alert['change_summary'])}")
+            lines.append("")
+
+        lines.append("Nota: alerta operativa basada en ranking estadistico.")
         return await self.send_message("\n".join(lines))
 
     async def test_connection(self) -> dict:

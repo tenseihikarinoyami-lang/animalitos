@@ -14,6 +14,9 @@ Capacidades activas:
 - Scheduler para ventanas de sorteo, resumen diario, resumen estadistico matutino y backfill semanal.
 - Calidad diaria por loteria.
 - Resumen estadistico versionado con backtesting y prediccion intradia por sorteo pendiente.
+- Ranking intradia v4 con coincidencias, parejas, trios, dia de semana, tramo del dia y comparacion contra baseline simple.
+- Alertas previas al siguiente sorteo para Telegram cuando el scheduler entra en ventana.
+- Deteccion de cambios de ranking entre corridas consecutivas.
 - Auditoria admin.
 - Exportacion `CSV/PDF`.
 - Panel admin actualizado y shell PWA basica.
@@ -29,8 +32,15 @@ Capacidades activas:
 - Prediccion intradia por ventana de sorteo con:
   - coincidencias del patron del dia
   - frecuencia historica por hora
+  - frecuencia reciente por hora
+  - dia de la semana y tramo del dia
   - transicion desde el ultimo resultado observado
+  - parejas y trios previos
+  - repeticion intradia
   - rezago de aparicion
+- Comparacion contra baseline simple de frecuencia en el backtesting.
+- Guardado de `top 3`, `top 5` y `top 10` por loteria y por ventana pendiente.
+- Deteccion de `rank_delta` y cambios de lider entre corridas.
 - Persistencia de corridas estadisticas en `prediction_runs`.
 - Persistencia de auditoria en `admin_audit_logs`.
 - Endpoint de cambio de clave para usuario autenticado.
@@ -68,6 +78,8 @@ Capacidades activas:
   - estados de carga/error
   - metodologia visible
   - backtesting
+  - comparacion contra baseline
+  - alertas de cambio entre corridas
   - candidatos por sorteo pendiente
 - Panel admin reforzado con:
   - estado del sistema
@@ -121,7 +133,11 @@ Definir en [`backend/.env`](/D:/Proyectos/animalitos/backend/.env):
    - usuarios pendientes de cambio de clave
 4. Revisar `Monitoreo en vivo` para validar los candidatos por sorteo pendiente.
 5. Lanzar backfill si hay huecos.
-6. Revisar Telegram admin para fallos o resumenes.
+6. Revisar Telegram admin para:
+   - resumen estadistico del dia
+   - alertas previas al siguiente sorteo
+   - cambios de ranking cuando entra un resultado nuevo relevante
+7. Verificar en `Analitica` si el motor sigue superando el baseline simple.
 
 ## Despliegue cloud recomendado
 - Base: `Supabase Postgres`
@@ -137,6 +153,9 @@ La guia detallada esta en [`GUIA_RENDER_SUPABASE_VERCEL_CRONJOB.md`](/D:/Proyect
 - Firestore real: OK.
 - Telegram real: OK.
 - Envio de mensaje de prueba: OK.
+- Ranking intradia v4: OK.
+- Backtesting con baseline: OK.
+- Alerta previa al sorteo en pruebas: OK.
 
 ## Pendiente recomendado
 - Ejecutar backfill real amplio de `90 dias` y revisar cobertura resultante.

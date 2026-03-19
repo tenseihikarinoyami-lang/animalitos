@@ -12,11 +12,17 @@ from app.services.telegram import telegram_service
 
 
 class MonitoringService:
-    def _persist_default_snapshots(self) -> None:
-        overview = analytics_service.build_dashboard_overview()
-        trends = analytics_service.build_trends(days=settings.analytics_default_days)
-        possible_results = analytics_service.build_possible_results_summary()
-        backtesting = analytics_service.build_backtesting_summary(days=settings.analytics_default_days)
+    def _persist_default_snapshots(
+        self,
+        overview=None,
+        trends=None,
+        possible_results=None,
+        backtesting=None,
+    ) -> None:
+        overview = overview or analytics_service.build_dashboard_overview()
+        trends = trends or analytics_service.build_trends(days=settings.analytics_default_days)
+        possible_results = possible_results or analytics_service.build_possible_results_summary()
+        backtesting = backtesting or analytics_service.build_backtesting_summary(days=settings.analytics_default_days)
 
         today_key = local_now().date().isoformat()
         db_service.save_analytics_snapshot(snapshot_key=f"overview:{today_key}", snapshot=overview.model_dump())
@@ -32,6 +38,58 @@ class MonitoringService:
             snapshot_key=f"backtesting:default:{today_key}",
             snapshot=backtesting.model_dump(),
         )
+
+    def _latest_prediction_summary(self) -> dict | None:
+        latest_prediction = db_service.get_latest_prediction_run()
+        return latest_prediction.get("summary") if latest_prediction else None
+
+    def _recent_pre_draw_window_keys(self) -> set[str]:
+        keys = set()
+        for run in db_service.get_prediction_runs(limit=100):
+            summary = run.get("summary", {})
+            delivery_context = summary.get("delivery_context", {})
+            if delivery_context.get("kind") != "pre-draw-alert":
+                continue
+            for window_key in delivery_context.get("alerted_window_keys", []):
+                keys.add(window_key)
+        return keys
+
+    def _collect_pre_draw_alerts(self, summary) -> list[dict]:
+        alerts = []
+        seen_keys = self._recent_pre_draw_window_keys()
+        reference_date = str(summary.reference_date or local_now().date())
+
+        for lottery in summary.lotteries:
+            next_window = lottery.draw_predictions[0] if lottery.draw_predictions else None
+            if not next_window or next_window.minutes_until is None:
+                continue
+            if not (0 <= next_window.minutes_until <= settings.prediction_pre_draw_lead_minutes):
+                continue
+
+            window_key = f"{reference_date}:{lottery.canonical_lottery_name}:{next_window.draw_time_local}"
+            if window_key in seen_keys:
+                continue
+
+            alerts.append(
+                {
+                    "window_key": window_key,
+                    "lottery_name": lottery.canonical_lottery_name,
+                    "draw_time_local": next_window.draw_time_local,
+                    "minutes_until": next_window.minutes_until,
+                    "change_summary": next_window.change_summary,
+                    "candidates": [
+                        {
+                            "animal_number": candidate.animal_number,
+                            "animal_name": candidate.animal_name,
+                            "score": candidate.score,
+                            "rank_delta": candidate.rank_delta,
+                        }
+                        for candidate in next_window.candidates[:3]
+                    ],
+                }
+            )
+
+        return alerts
 
     def _build_run_quality_metadata(
         self,
@@ -117,8 +175,17 @@ class MonitoringService:
         run_id = db_service.save_ingestion_run(ingestion_run)
         ingestion_run["id"] = run_id
 
-        self._persist_default_snapshots()
         overview = analytics_service.build_dashboard_overview()
+        trends = analytics_service.build_trends(days=settings.analytics_default_days)
+        previous_summary = self._latest_prediction_summary()
+        possible_results = analytics_service.build_possible_results_summary(previous_summary=previous_summary)
+        backtesting = analytics_service.build_backtesting_summary(days=settings.analytics_default_days)
+        self._persist_default_snapshots(
+            overview=overview,
+            trends=trends,
+            possible_results=possible_results,
+            backtesting=backtesting,
+        )
 
         if notify and save_stats["new_results"]:
             await telegram_service.send_results_digest(save_stats["new_results"], ingestion_run)
@@ -127,7 +194,12 @@ class MonitoringService:
         if save_stats["new_count"] > 0:
             await self.send_today_possible_results(
                 preview_only=not (notify and settings.prediction_auto_send_on_refresh),
+                trigger_context="refresh-update",
+                previous_summary=previous_summary,
+                summary=possible_results,
             )
+        elif notify:
+            await self.send_due_pre_draw_alerts(summary=possible_results)
         log_event(
             logging.getLogger(__name__),
             logging.INFO,
@@ -207,7 +279,13 @@ class MonitoringService:
             "source_reports": source_reports,
         }
         run["id"] = db_service.save_ingestion_run(run)
-        self._persist_default_snapshots()
+        previous_summary = self._latest_prediction_summary()
+        self._persist_default_snapshots(
+            overview=analytics_service.build_dashboard_overview(),
+            trends=analytics_service.build_trends(days=settings.analytics_default_days),
+            possible_results=analytics_service.build_possible_results_summary(previous_summary=previous_summary),
+            backtesting=analytics_service.build_backtesting_summary(days=settings.analytics_default_days),
+        )
         log_event(
             logging.getLogger(__name__),
             logging.INFO,
@@ -281,21 +359,33 @@ class MonitoringService:
         top_n: int | None = None,
         lotteries: list[str] | None = None,
         preview_only: bool = False,
+        trigger_context: str = "manual-summary",
+        previous_summary: dict | None = None,
+        summary=None,
     ) -> dict:
-        summary = analytics_service.build_possible_results_summary(top_n=top_n, lotteries=lotteries)
+        summary = summary or analytics_service.build_possible_results_summary(
+            top_n=top_n,
+            lotteries=lotteries,
+            previous_summary=previous_summary,
+        )
         sent = False
         delivery_status = "preview"
         if not preview_only:
             sent = await telegram_service.send_possible_results_summary(summary.model_dump())
             delivery_status = "sent" if sent else "failed"
 
+        summary_payload = summary.model_dump()
+        summary_payload["delivery_context"] = {
+            "kind": trigger_context,
+            "change_alerts_count": len(summary.change_alerts),
+        }
         run_payload = {
             "generated_at": summary.generated_at,
             "delivery_status": delivery_status,
             "preview_only": preview_only,
             "target_lotteries": [item.canonical_lottery_name for item in summary.lotteries],
             "top_n": top_n or settings.prediction_default_top_n,
-            "summary": summary.model_dump(),
+            "summary": summary_payload,
             "telegram_sent": sent,
         }
         prediction_run_id = db_service.save_prediction_run(run_payload)
@@ -321,6 +411,31 @@ class MonitoringService:
                 "preview_only": preview_only,
             },
         }
+
+    async def send_due_pre_draw_alerts(self, summary=None) -> dict:
+        summary = summary or analytics_service.build_possible_results_summary(previous_summary=self._latest_prediction_summary())
+        alerts = self._collect_pre_draw_alerts(summary)
+        if not alerts:
+            return {"sent": False, "alerts": []}
+
+        sent = await telegram_service.send_pre_draw_alerts(alerts)
+        summary_payload = summary.model_dump()
+        summary_payload["delivery_context"] = {
+            "kind": "pre-draw-alert",
+            "alerted_window_keys": [item["window_key"] for item in alerts],
+        }
+        prediction_run_id = db_service.save_prediction_run(
+            {
+                "generated_at": summary.generated_at,
+                "delivery_status": "sent" if sent else "failed",
+                "preview_only": False,
+                "target_lotteries": [item.canonical_lottery_name for item in summary.lotteries],
+                "top_n": settings.prediction_default_top_n,
+                "summary": summary_payload,
+                "telegram_sent": sent,
+            }
+        )
+        return {"sent": sent, "alerts": alerts, "prediction_run_id": prediction_run_id}
 
     async def run_weekly_recovery_backfill(self) -> dict:
         return await self.backfill(

@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     rate_limit_admin_attempts: int = 24
     prediction_default_top_n: int = 5
     prediction_auto_send_on_refresh: bool = True
+    prediction_pre_draw_lead_minutes: int = 7
     admin_audit_default_limit: int = 50
     results_cache_ttl_seconds: int = 180
     use_external_scheduler: bool = Field(
