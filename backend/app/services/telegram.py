@@ -1,5 +1,7 @@
+import asyncio
 import html
 import logging
+import re
 
 import httpx
 
@@ -8,6 +10,8 @@ from app.core.logging import log_event
 
 
 class TelegramService:
+    MAX_MESSAGE_LENGTH = 4000
+
     def __init__(self) -> None:
         self.bot_token = settings.telegram_bot_token
         self.chat_id = settings.telegram_chat_id
@@ -24,37 +28,80 @@ class TelegramService:
     def base_url(self) -> str:
         return f"https://api.telegram.org/bot{self.bot_token}"
 
+    @classmethod
+    def _truncate_message(cls, message: str) -> str:
+        if len(message) <= cls.MAX_MESSAGE_LENGTH:
+            return message
+        suffix = "\n\n[Mensaje truncado por longitud]"
+        return message[: cls.MAX_MESSAGE_LENGTH - len(suffix)] + suffix
+
+    @staticmethod
+    def _plain_text_message(message: str) -> str:
+        no_tags = re.sub(r"<[^>]+>", "", message)
+        return html.unescape(no_tags)
+
+    async def _post_message(self, message: str, parse_mode: str | None) -> httpx.Response:
+        payload = {
+            "chat_id": self.chat_id,
+            "text": message,
+            "disable_web_page_preview": True,
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, http2=False) as client:
+            return await client.post(
+                f"{self.base_url}/sendMessage",
+                json=payload,
+            )
+
     async def send_message(self, message: str, parse_mode: str = "HTML") -> bool:
         if not self.configured:
             return False
 
-        try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                response = await client.post(
-                    f"{self.base_url}/sendMessage",
-                    json={
-                        "chat_id": self.chat_id,
-                        "text": message,
-                        "parse_mode": parse_mode,
-                        "disable_web_page_preview": True,
-                    },
-                )
-                response.raise_for_status()
-                log_event(
-                    logging.getLogger(__name__),
-                    logging.INFO,
-                    "telegram_message_sent",
-                    chat_id=self.chat_id,
-                )
-                return response.json().get("ok", False)
-        except Exception as exc:
-            log_event(
-                logging.getLogger(__name__),
-                logging.ERROR,
-                "telegram_send_error",
-                error=str(exc),
-            )
-            return False
+        variants = [(self._truncate_message(message), parse_mode)]
+        if parse_mode.upper() == "HTML":
+            variants.append((self._truncate_message(self._plain_text_message(message)), None))
+
+        last_error = None
+        for index, (candidate_message, candidate_mode) in enumerate(variants):
+            for attempt in range(1, 4):
+                try:
+                    response = await self._post_message(candidate_message, candidate_mode)
+                    if response.status_code >= 400:
+                        try:
+                            last_error = response.json()
+                        except Exception:
+                            last_error = response.text
+                        if candidate_mode and response.status_code in {400, 413, 422}:
+                            break
+                        response.raise_for_status()
+                    payload = response.json()
+                    if payload.get("ok", False):
+                        log_event(
+                            logging.getLogger(__name__),
+                            logging.INFO,
+                            "telegram_message_sent",
+                            chat_id=self.chat_id,
+                            parse_mode=candidate_mode or "plain",
+                            attempt=attempt,
+                            fallback=index > 0,
+                        )
+                        return True
+                    last_error = payload
+                except Exception as exc:
+                    last_error = str(exc)
+
+                await asyncio.sleep(min(attempt, 2))
+
+        log_event(
+            logging.getLogger(__name__),
+            logging.ERROR,
+            "telegram_send_error",
+            error=str(last_error),
+            chat_id=self.chat_id,
+        )
+        return False
 
     async def send_results_digest(self, results: list[dict], ingestion_run: dict) -> bool:
         if not results:
