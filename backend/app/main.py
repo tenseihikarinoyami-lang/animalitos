@@ -66,7 +66,7 @@ def ensure_admin_user() -> None:
 
 
 async def scheduled_refresh() -> None:
-    await monitoring_service.run_due_scheduler_cycle()
+    await monitoring_service.run_due_scheduler_cycle(trigger="internal-scheduler", notify=True)
 
 
 async def scheduled_daily_summary() -> None:
@@ -94,13 +94,13 @@ async def lifespan(app: FastAPI):
     ensure_admin_user()
     db_service.ensure_default_schedules()
 
+    scheduler.add_job(
+        scheduled_refresh,
+        trigger=IntervalTrigger(minutes=settings.scheduler_interval_minutes),
+        id="scheduled_refresh",
+        replace_existing=True,
+    )
     if not settings.use_external_scheduler:
-        scheduler.add_job(
-            scheduled_refresh,
-            trigger=IntervalTrigger(minutes=settings.scheduler_interval_minutes),
-            id="scheduled_refresh",
-            replace_existing=True,
-        )
         scheduler.add_job(
             scheduled_possible_results,
             trigger=CronTrigger(hour=8, minute=5, timezone=ZoneInfo(settings.app_timezone)),
@@ -119,7 +119,7 @@ async def lifespan(app: FastAPI):
             id="scheduled_weekly_recovery_backfill",
             replace_existing=True,
         )
-        scheduler.start()
+    scheduler.start()
     yield
     if scheduler.running:
         scheduler.shutdown(wait=False)
@@ -148,13 +148,19 @@ app.include_router(admin.router, prefix="/api")
 @app.get("/health", tags=["Health"])
 async def health_check():
     status_report = analytics_service.build_system_status(
-        scheduler_running=(scheduler.running or settings.use_external_scheduler)
+        scheduler_running=scheduler.running
     )
     return {
         "status": "healthy",
         "firebase_connected": status_report.firebase_connected,
         "database_provider": status_report.database_provider,
         "scheduler_running": status_report.scheduler_running,
+        "scheduler_mode": status_report.scheduler_mode,
+        "scheduler_stale": status_report.scheduler_stale,
+        "scheduler_last_received_at": status_report.scheduler_last_received_at,
+        "scheduler_last_completed_at": status_report.scheduler_last_completed_at,
+        "scheduler_last_status": status_report.scheduler_last_status,
+        "scheduler_last_kind": status_report.scheduler_last_kind,
         "telegram_configured": status_report.telegram_configured,
         "latest_successful_run_at": status_report.latest_successful_run.completed_at if status_report.latest_successful_run else None,
         "latest_backfill_at": status_report.latest_backfill_run.completed_at if status_report.latest_backfill_run else None,

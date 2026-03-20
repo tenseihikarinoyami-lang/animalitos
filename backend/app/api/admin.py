@@ -280,7 +280,7 @@ async def send_possible_results_to_telegram(
 async def get_system_status(current_user: dict = Depends(require_admin)):
     from app.main import scheduler
 
-    return analytics_service.build_system_status(scheduler_running=(scheduler.running or settings.use_external_scheduler))
+    return analytics_service.build_system_status(scheduler_running=scheduler.running)
 
 
 @router.get("/system/quality", response_model=QualityReportResponse)

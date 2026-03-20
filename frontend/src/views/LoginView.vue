@@ -35,9 +35,10 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import api from '@/services/api'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -49,6 +50,10 @@ const formData = ref({
 
 const loading = ref(false)
 const error = ref('')
+
+onMounted(() => {
+  api.warmup()
+})
 
 async function handleLogin() {
   loading.value = true

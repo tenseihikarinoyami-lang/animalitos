@@ -1,7 +1,13 @@
 import axios from 'axios'
 
+const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL || '/api'
+const backendOrigin = configuredBaseUrl.endsWith('/api')
+  ? configuredBaseUrl.slice(0, -4)
+  : configuredBaseUrl
+const healthUrl = backendOrigin ? `${backendOrigin}/health` : '/health'
+
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
+  baseURL: configuredBaseUrl,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -25,8 +31,11 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    const requestUrl = String(error.config?.url || '')
+    const isAuthRequest = requestUrl.includes('/auth/login') || requestUrl.includes('/auth/register')
+    if (error.response?.status === 401 && !isAuthRequest) {
       localStorage.removeItem('token')
+      localStorage.removeItem('auth_user')
       window.location.href = '/login'
     }
     return Promise.reject(error)
@@ -40,6 +49,20 @@ api.setToken = (token) => {
   } else {
     delete api.defaults.headers.common['Authorization']
   }
+}
+
+api.warmup = async () => {
+  try {
+    await axios.get(healthUrl, {
+      timeout: 12000,
+      headers: {
+        'Cache-Control': 'no-cache',
+      },
+    })
+  } catch (_error) {
+    return null
+  }
+  return true
 }
 
 export default api

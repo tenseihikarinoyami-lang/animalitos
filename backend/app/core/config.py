@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     scheduler_interval_minutes: int = 1
     scheduler_lookback_minutes: int = 18
     scheduler_min_gap_minutes: int = 8
+    scheduler_stale_threshold_minutes: int = 20
+    scheduler_refresh_status_stale_minutes: int = 25
+    scheduler_self_heal_enabled: bool = True
     backfill_default_days: int = 90
     analytics_default_days: int = 30
     quality_default_days: int = 14

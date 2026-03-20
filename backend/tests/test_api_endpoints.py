@@ -150,6 +150,8 @@ def test_admin_quality_status_audit_and_backtesting_routes(client, admin_headers
     assert backtesting_response.status_code == 200
     assert quality_response.json()["items"]
     assert "total_results" in status_response.json()
+    assert "scheduler_mode" in status_response.json()
+    assert "scheduler_last_received_at" in status_response.json()
     assert audit_response.json()[0]["action"] == "results_refresh"
     assert "overall_top_3_rate" in backtesting_response.json()
 
@@ -220,6 +222,44 @@ def test_admin_background_backfill_status_routes(client, admin_headers, monkeypa
     assert status_response.status_code == 200
     assert status_response.json()["status"] == "running"
     assert status_response.json()["completed_days"] == 1
+
+
+def test_internal_scheduler_refresh_is_queued(client, monkeypatch):
+    monkeypatch.setattr("app.api.monitoring.settings.scheduler_service_token", "scheduler-test-token")
+
+    async def fake_start_scheduler_refresh(trigger="cloud-scheduler", notify=True):
+        return (
+            {
+                "job_id": "refresh-123",
+                "status": "queued",
+                "trigger": trigger,
+                "message": "Refresh en cola para ejecutarse en segundo plano.",
+                "results_found": 0,
+                "new_results": 0,
+                "duplicates": 0,
+                "errors_count": 0,
+                "last_error": None,
+                "started_at": datetime(2026, 3, 19, tzinfo=timezone.utc),
+                "updated_at": datetime(2026, 3, 19, tzinfo=timezone.utc),
+                "completed_at": None,
+                "ingestion_run_id": None,
+            },
+            True,
+        )
+
+    monkeypatch.setattr(
+        "app.api.monitoring.monitoring_service.start_scheduler_refresh",
+        fake_start_scheduler_refresh,
+    )
+
+    response = client.post(
+        "/api/internal/scheduler/refresh",
+        headers={"X-Scheduler-Token": "scheduler-test-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+    assert response.json()["details"]["job_id"] == "refresh-123"
 
 
 def test_export_routes_return_downloadable_files(client, admin_headers):

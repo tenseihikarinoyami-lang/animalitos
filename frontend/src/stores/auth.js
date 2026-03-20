@@ -2,8 +2,26 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '@/services/api'
 
+function loadStoredUser() {
+  try {
+    const raw = localStorage.getItem('auth_user')
+    return raw ? JSON.parse(raw) : null
+  } catch (_error) {
+    localStorage.removeItem('auth_user')
+    return null
+  }
+}
+
+function persistUser(user) {
+  if (user) {
+    localStorage.setItem('auth_user', JSON.stringify(user))
+    return
+  }
+  localStorage.removeItem('auth_user')
+}
+
 export const useAuthStore = defineStore('auth', () => {
-  const user = ref(null)
+  const user = ref(loadStoredUser())
   const token = ref(localStorage.getItem('token') || null)
   let bootstrapRequestToken = null
 
@@ -17,6 +35,7 @@ export const useAuthStore = defineStore('auth', () => {
       token.value = response.data.access_token
       
       localStorage.setItem('token', response.data.access_token)
+      persistUser(response.data.user)
       api.setToken(response.data.access_token)
       
       return { success: true }
@@ -49,6 +68,7 @@ export const useAuthStore = defineStore('auth', () => {
       const response = await api.get('/auth/me')
       if (token.value !== expectedToken) return
       user.value = response.data
+      persistUser(response.data)
     } catch (error) {
       if (token.value === expectedToken) {
         logout()
@@ -67,6 +87,7 @@ export const useAuthStore = defineStore('auth', () => {
         new_password: newPassword,
       })
       user.value = response.data
+      persistUser(response.data)
       return { success: true, data: response.data }
     } catch (error) {
       return {
@@ -81,6 +102,7 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = null
     bootstrapRequestToken = null
     localStorage.removeItem('token')
+    persistUser(null)
     api.setToken(null)
   }
 

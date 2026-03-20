@@ -23,6 +23,10 @@ Capacidades activas:
 - Backfill manual asincrono con seguimiento de progreso y estado persistido en el panel admin.
 - Soporte para proveedor de base `Supabase Postgres` ademas de Firestore/mock.
 - Endpoints internos listos para scheduler externo.
+- Heartbeat real del scheduler con deteccion de atraso.
+- Auto-recuperacion cuando entra un usuario y faltan resultados por la hora del dia.
+- Refresh del scheduler en segundo plano para evitar timeouts de peticiones largas.
+- Fallback interno de refresh aun cuando se use scheduler externo.
 
 ## Lo que se implemento
 ### Backend
@@ -47,11 +51,19 @@ Capacidades activas:
 - Endpoint de cambio de clave para usuario autenticado.
 - Endpoints admin para listar usuarios, crear usuarios temporales y resetear claves.
 - Endpoints internos para scheduler cloud:
-  - tambien compatibles con `cron-job.org`
+  - tambien compatibles con GitHub Actions o cualquier scheduler externo
   - `POST /api/internal/scheduler/refresh`
   - `POST /api/internal/scheduler/possible-results`
   - `POST /api/internal/scheduler/daily-summary`
   - `POST /api/internal/scheduler/weekly-backfill`
+- El `refresh` del scheduler ahora se encola en segundo plano y responde rapido para no depender de una sola peticion larga.
+- El health y el panel admin ahora muestran:
+  - `scheduler_mode`
+  - `scheduler_last_received_at`
+  - `scheduler_last_completed_at`
+  - `scheduler_last_status`
+  - `scheduler_last_kind`
+  - `scheduler_stale`
 - Metadatos de cobertura por corrida:
   - `coverage_start`
   - `coverage_end`
@@ -74,6 +86,8 @@ Capacidades activas:
 ### Frontend
 - Ruta de monitoreo renombrada a `/monitoring`.
 - URL del backend configurable por `VITE_API_BASE_URL`.
+- Warmup silencioso del backend desde login para reducir la espera del primer acceso en Render.
+- Cache local del usuario autenticado para evitar rebootstrap pesado en cada recarga.
 - Vista `Cuenta` para cambio de clave obligatorio o voluntario.
 - Monitoreo en vivo con candidatos que se actualizan conforme salen resultados del dia.
 - Vista de analitica reforzada con:
@@ -148,10 +162,12 @@ Definir en [`backend/.env`](/D:/Proyectos/animalitos/backend/.env):
 ## Despliegue cloud recomendado
 - Base: `Supabase Postgres`
 - Backend: `Render`
-- Jobs: `cron-job.org`
+- Jobs: `GitHub Actions` como opcion recomendada versionada en repo
 - Frontend: `Vercel`
 
-La guia detallada esta en [`GUIA_RENDER_SUPABASE_VERCEL_CRONJOB.md`](/D:/Proyectos/animalitos/GUIA_RENDER_SUPABASE_VERCEL_CRONJOB.md).
+Guias detalladas:
+- [`GUIA_RENDER_SUPABASE_VERCEL_CRONJOB.md`](/D:/Proyectos/animalitos/GUIA_RENDER_SUPABASE_VERCEL_CRONJOB.md)
+- [`GUIA_GITHUB_ACTIONS_SCHEDULER.md`](/D:/Proyectos/animalitos/GUIA_GITHUB_ACTIONS_SCHEDULER.md)
 
 ## Verificaciones hechas en desarrollo
 - `pytest` backend: OK.
@@ -162,6 +178,8 @@ La guia detallada esta en [`GUIA_RENDER_SUPABASE_VERCEL_CRONJOB.md`](/D:/Proyect
 - Ranking intradia v4: OK.
 - Backtesting con baseline: OK.
 - Alerta previa al sorteo en pruebas: OK.
+- Scheduler en cola rapida y heartbeat: OK.
+- Frontend con warmup/login cache: OK.
 
 ## Pendiente recomendado
 - Ejecutar backfill real amplio de `90 dias` y revisar cobertura resultante.

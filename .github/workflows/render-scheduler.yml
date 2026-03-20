@@ -1,0 +1,91 @@
+name: Animalitos Render Scheduler
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+    - cron: "5 12 * * *"
+    - cron: "15 1 * * *"
+    - cron: "10 8 * * 0"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Tarea a ejecutar"
+        required: true
+        default: refresh
+        type: choice
+        options:
+          - refresh
+          - possible-results
+          - daily-summary
+          - weekly-backfill
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.target == 'refresh') || (github.event_name == 'schedule' && github.event.schedule == '*/5 * * * *') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wake backend
+        env:
+          BACKEND_URL: ${{ secrets.ANIMALITOS_BACKEND_URL }}
+        run: |
+          curl --fail --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 30 \
+            "${BACKEND_URL}/health" > /dev/null
+
+      - name: Queue refresh
+        env:
+          BACKEND_URL: ${{ secrets.ANIMALITOS_BACKEND_URL }}
+          SCHEDULER_TOKEN: ${{ secrets.ANIMALITOS_SCHEDULER_TOKEN }}
+        run: |
+          curl --fail --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 60 \
+            -X POST \
+            -H "X-Scheduler-Token: ${SCHEDULER_TOKEN}" \
+            "${BACKEND_URL}/api/internal/scheduler/refresh"
+
+  possible-results:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.target == 'possible-results') || (github.event_name == 'schedule' && github.event.schedule == '5 12 * * *') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger possible results summary
+        env:
+          BACKEND_URL: ${{ secrets.ANIMALITOS_BACKEND_URL }}
+          SCHEDULER_TOKEN: ${{ secrets.ANIMALITOS_SCHEDULER_TOKEN }}
+        run: |
+          curl --fail --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 60 \
+            -X POST \
+            -H "X-Scheduler-Token: ${SCHEDULER_TOKEN}" \
+            "${BACKEND_URL}/api/internal/scheduler/possible-results"
+
+  daily-summary:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.target == 'daily-summary') || (github.event_name == 'schedule' && github.event.schedule == '15 1 * * *') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger daily summary
+        env:
+          BACKEND_URL: ${{ secrets.ANIMALITOS_BACKEND_URL }}
+          SCHEDULER_TOKEN: ${{ secrets.ANIMALITOS_SCHEDULER_TOKEN }}
+        run: |
+          curl --fail --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 60 \
+            -X POST \
+            -H "X-Scheduler-Token: ${SCHEDULER_TOKEN}" \
+            "${BACKEND_URL}/api/internal/scheduler/daily-summary"
+
+  weekly-backfill:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.target == 'weekly-backfill') || (github.event_name == 'schedule' && github.event.schedule == '10 8 * * 0') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger weekly recovery backfill
+        env:
+          BACKEND_URL: ${{ secrets.ANIMALITOS_BACKEND_URL }}
+          SCHEDULER_TOKEN: ${{ secrets.ANIMALITOS_SCHEDULER_TOKEN }}
+        run: |
+          curl --fail --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 90 \
+            -X POST \
+            -H "X-Scheduler-Token: ${SCHEDULER_TOKEN}" \
+            "${BACKEND_URL}/api/internal/scheduler/weekly-backfill"

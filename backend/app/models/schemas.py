@@ -371,6 +371,13 @@ class SystemStatusResponse(BaseModel):
     database_provider: str
     telegram_configured: bool
     scheduler_running: bool
+    scheduler_mode: str = "internal"
+    scheduler_last_received_at: datetime | None = None
+    scheduler_last_completed_at: datetime | None = None
+    scheduler_last_status: str | None = None
+    scheduler_last_kind: str | None = None
+    scheduler_message: str | None = None
+    scheduler_stale: bool = False
     latest_successful_run: IngestionRun | None = None
     latest_failed_run: IngestionRun | None = None
     latest_backfill_run: IngestionRun | None = None

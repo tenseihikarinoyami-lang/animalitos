@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.core.security import create_access_token, decode_access_token, get_password_hash, verify_password
 from app.models.schemas import PasswordChangeRequest, Token, UserCreate, UserLogin, UserResponse
 from app.services.database import db_service
+from app.services.monitoring import monitoring_service
 from app.services.rate_limit import limit_auth_requests
 from app.services.schedule import utc_now
 
@@ -144,6 +145,8 @@ async def login(login_data: UserLogin, request: Request, _: None = Depends(limit
             details={"message": "Admin session created"},
         )
 
+    monitoring_service.schedule_recovery_check(trigger="login")
+
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -163,6 +166,7 @@ async def login(login_data: UserLogin, request: Request, _: None = Depends(limit
 
 @router.get("/me", response_model=UserResponse)
 async def me(current_user: dict = Depends(get_current_user)):
+    monitoring_service.schedule_recovery_check(trigger="auth-me")
     return {
         "id": current_user["username"],
         "username": current_user["username"],

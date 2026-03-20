@@ -1100,6 +1100,8 @@ class AnalyticsService:
         latest_backfill = db_service.get_latest_backfill_run()
         latest_prediction = db_service.get_latest_prediction_run()
         active_backfill_snapshot = db_service.get_analytics_snapshot("admin:backfill-status")
+        scheduler_heartbeat = db_service.get_analytics_snapshot("scheduler:heartbeat") or {}
+        now_local = local_now()
 
         warnings = []
         if settings.jwt_secret_key == "super-secret-key-change-in-production":
@@ -1113,6 +1115,41 @@ class AnalyticsService:
         if settings.use_external_scheduler and not settings.scheduler_service_token:
             warnings.append("External scheduler mode is enabled but scheduler token is empty.")
 
+        scheduler_mode = "external+internal-fallback" if settings.use_external_scheduler else "internal"
+        scheduler_last_received_at = (
+            self._coerce_datetime(scheduler_heartbeat.get("last_received_at"))
+            if scheduler_heartbeat.get("last_received_at")
+            else None
+        )
+        scheduler_last_completed_at = (
+            self._coerce_datetime(scheduler_heartbeat.get("last_completed_at"))
+            if scheduler_heartbeat.get("last_completed_at")
+            else None
+        )
+        scheduler_last_status = scheduler_heartbeat.get("last_status")
+        scheduler_last_kind = scheduler_heartbeat.get("last_kind")
+        scheduler_message = scheduler_heartbeat.get("message")
+
+        scheduler_stale = False
+        schedules = db_service.get_schedules()
+        active_times = sorted({time_value for schedule in schedules for time_value in schedule.get("times", [])})
+        if settings.use_external_scheduler and active_times:
+            earliest_time = parse_time_local(active_times[0])
+            latest_time = parse_time_local(active_times[-1])
+            earliest_dt = datetime.combine(now_local.date(), earliest_time, tzinfo=now_local.tzinfo)
+            latest_dt = datetime.combine(now_local.date(), latest_time, tzinfo=now_local.tzinfo) + timedelta(
+                minutes=settings.scheduler_stale_threshold_minutes
+            )
+            if earliest_dt <= now_local <= latest_dt:
+                reference_activity = scheduler_last_received_at or scheduler_last_completed_at
+                if not reference_activity or utc_now() - reference_activity > timedelta(
+                    minutes=settings.scheduler_stale_threshold_minutes
+                ):
+                    scheduler_stale = True
+                    warnings.append(
+                        "External scheduler heartbeat is stale; automatic refreshes may be delayed until a user session or fallback cycle wakes the service."
+                    )
+
         database_provider = "mock"
         if db_service.is_postgres_mode:
             database_provider = "postgres"
@@ -1125,6 +1162,13 @@ class AnalyticsService:
             database_provider=database_provider,
             telegram_configured=telegram_service.configured,
             scheduler_running=scheduler_running,
+            scheduler_mode=scheduler_mode,
+            scheduler_last_received_at=scheduler_last_received_at,
+            scheduler_last_completed_at=scheduler_last_completed_at,
+            scheduler_last_status=scheduler_last_status,
+            scheduler_last_kind=scheduler_last_kind,
+            scheduler_message=scheduler_message,
+            scheduler_stale=scheduler_stale,
             latest_successful_run=IngestionRun.model_validate(latest_successful) if latest_successful else None,
             latest_failed_run=IngestionRun.model_validate(latest_failed) if latest_failed else None,
             latest_backfill_run=IngestionRun.model_validate(latest_backfill) if latest_backfill else None,

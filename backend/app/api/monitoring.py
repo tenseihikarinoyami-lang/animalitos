@@ -50,12 +50,10 @@ def _default_backtesting_request(days: int | None, top_n: int | None, lotteries:
 @router.get("/dashboard/overview", response_model=DashboardOverview)
 async def get_dashboard_overview(current_user: dict = Depends(get_current_user)):
     snapshot = _default_snapshot("overview:")
-    try:
-        return analytics_service.build_dashboard_overview()
-    except Exception:
-        if snapshot:
-            return snapshot
-        raise
+    monitoring_service.schedule_recovery_check(trigger="dashboard")
+    if snapshot:
+        return snapshot
+    return analytics_service.build_dashboard_overview()
 
 
 @router.get("/results", response_model=ResultQueryResponse)
@@ -93,6 +91,7 @@ async def get_today_results(
     limit: int = 200,
     current_user: dict = Depends(get_current_user),
 ):
+    monitoring_service.schedule_recovery_check(trigger="today-results")
     today = local_now().date().isoformat()
     items = db_service.get_results(
         canonical_lottery_name=lottery_name,
@@ -206,7 +205,12 @@ async def get_backtesting(
 
 @router.post("/internal/scheduler/refresh")
 async def internal_scheduler_refresh(_: None = Depends(require_scheduler_token)):
-    return await monitoring_service.refresh_today(trigger="cloud-scheduler", notify=True)
+    refresh_status, started = await monitoring_service.start_scheduler_refresh(trigger="cloud-scheduler", notify=True)
+    return {
+        "accepted": started,
+        "message": "Refresh programado en segundo plano." if started else "Ya habia un refresh del scheduler en ejecucion.",
+        "details": refresh_status,
+    }
 
 
 @router.post("/internal/scheduler/possible-results")

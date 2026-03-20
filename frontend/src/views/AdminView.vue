@@ -31,11 +31,18 @@
             <span class="pill" :class="pillClass(systemStatus?.telegram_configured ? 'success' : 'warning')">
               Telegram {{ systemStatus?.telegram_configured ? 'OK' : 'Pendiente' }}
             </span>
-            <span class="pill" :class="pillClass(systemStatus?.scheduler_running ? 'success' : 'danger')">
-              Scheduler {{ systemStatus?.scheduler_running ? 'Activo' : 'Detenido' }}
+            <span
+              class="pill"
+              :class="pillClass(systemStatus?.scheduler_stale ? 'warning' : systemStatus?.scheduler_running ? 'success' : 'danger')"
+            >
+              Scheduler {{ systemStatus?.scheduler_stale ? 'Atrasado' : systemStatus?.scheduler_running ? 'Activo' : 'Detenido' }}
             </span>
           </div>
           <div class="status-copy">
+            <p><strong>Modo scheduler:</strong> {{ systemStatus?.scheduler_mode || 'n/a' }}</p>
+            <p><strong>Ultimo ping scheduler:</strong> {{ formatDateTime(systemStatus?.scheduler_last_received_at) }}</p>
+            <p><strong>Ultima finalizacion scheduler:</strong> {{ formatDateTime(systemStatus?.scheduler_last_completed_at) }}</p>
+            <p><strong>Ultimo estado scheduler:</strong> {{ systemStatus?.scheduler_last_status || 'n/a' }}</p>
             <p><strong>Ultimo refresh OK:</strong> {{ formatDateTime(systemStatus?.latest_successful_run?.completed_at) }}</p>
             <p><strong>Ultimo backfill:</strong> {{ formatDateTime(systemStatus?.latest_backfill_run?.completed_at) }}</p>
             <p><strong>Ultima tendencia:</strong> {{ formatDateTime(systemStatus?.latest_prediction_run?.generated_at) }}</p>
