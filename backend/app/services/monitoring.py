@@ -24,6 +24,7 @@ class MonitoringService:
         self._backfill_task: asyncio.Task | None = None
         self._refresh_task: asyncio.Task | None = None
         self._self_heal_task: asyncio.Task | None = None
+        self._backtesting_snapshot_task: asyncio.Task | None = None
         self._self_heal_lock = asyncio.Lock()
 
     @staticmethod
@@ -368,6 +369,42 @@ class MonitoringService:
                 snapshot=backtesting.model_dump(),
             )
 
+    async def _run_backtesting_snapshot_refresh(self) -> None:
+        try:
+            backtesting = await asyncio.to_thread(
+                analytics_service.build_backtesting_summary,
+                settings.analytics_default_days,
+                settings.prediction_default_top_n,
+                None,
+            )
+            today_key = local_now().date().isoformat()
+            db_service.save_analytics_snapshot(
+                snapshot_key=f"backtesting:default:{today_key}",
+                snapshot=backtesting.model_dump(),
+            )
+            log_event(
+                logging.getLogger(__name__),
+                logging.INFO,
+                "backtesting_snapshot_refreshed",
+                days=settings.analytics_default_days,
+            )
+        except Exception as exc:
+            log_event(
+                logging.getLogger(__name__),
+                logging.ERROR,
+                "backtesting_snapshot_failed",
+                error=str(exc),
+            )
+        finally:
+            self._backtesting_snapshot_task = None
+
+    def start_backtesting_snapshot_refresh(self) -> bool:
+        task_active = bool(self._backtesting_snapshot_task and not self._backtesting_snapshot_task.done())
+        if task_active:
+            return False
+        self._backtesting_snapshot_task = asyncio.create_task(self._run_backtesting_snapshot_refresh())
+        return True
+
     def _latest_prediction_summary(self) -> dict | None:
         latest_prediction = db_service.get_latest_prediction_run()
         return latest_prediction.get("summary") if latest_prediction else None
@@ -521,6 +558,7 @@ class MonitoringService:
             possible_results=possible_results,
             persist_backtesting=False,
         )
+        self.start_backtesting_snapshot_refresh()
 
         if notify and save_stats["new_results"]:
             await telegram_service.send_results_digest(save_stats["new_results"], ingestion_run)
@@ -727,6 +765,7 @@ class MonitoringService:
             possible_results=analytics_service.build_possible_results_summary(previous_summary=previous_summary),
             persist_backtesting=False,
         )
+        self.start_backtesting_snapshot_refresh()
         log_event(
             logging.getLogger(__name__),
             logging.INFO,
@@ -935,6 +974,8 @@ class MonitoringService:
         }
         prediction_run_id = db_service.save_prediction_run(run_payload)
         backtesting_snapshot = db_service.get_latest_analytics_snapshot("backtesting:default:")
+        if not backtesting_snapshot:
+            self.start_backtesting_snapshot_refresh()
         self._record_scheduler_heartbeat(
             kind="possible-results",
             status=delivery_status,

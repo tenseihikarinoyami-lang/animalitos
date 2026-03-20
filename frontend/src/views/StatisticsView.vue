@@ -13,8 +13,8 @@
             La tendencia se recalcula con historico, coincidencias por sorteo y resultados ya observados en el dia.
           </p>
         </div>
-        <button class="btn-primary" :disabled="lotteryStore.loading" @click="loadAnalytics">
-          <span v-if="lotteryStore.loading" class="spinner"></span>
+        <button class="btn-primary" :disabled="analyticsLoading" @click="loadAnalytics">
+          <span v-if="analyticsLoading" class="spinner"></span>
           <span v-else>Actualizar analisis</span>
         </button>
       </div>
@@ -40,8 +40,8 @@
         </div>
       </div>
 
-      <p v-if="lotteryStore.error" class="status-banner error">
-        {{ lotteryStore.error }}
+      <p v-if="analyticsError" class="status-banner error">
+        {{ analyticsError }}
       </p>
     </section>
 
@@ -58,12 +58,12 @@
       </article>
       <article class="glass-card metric-card">
         <p class="eyebrow">Backtesting</p>
-        <h3 class="metric-value">{{ asPercent(backtesting?.overall_top_3_rate) }}</h3>
+        <h3 class="metric-value">{{ backtestingLoading && !backtesting ? '...' : asPercent(backtesting?.overall_top_3_rate) }}</h3>
         <p class="metric-label">Top 3 global</p>
       </article>
       <article class="glass-card metric-card">
         <p class="eyebrow">Baseline</p>
-        <h3 class="metric-value">{{ asPercent(backtesting?.baseline_overall_top_3_rate) }}</h3>
+        <h3 class="metric-value">{{ backtestingLoading && !backtesting ? '...' : asPercent(backtesting?.baseline_overall_top_3_rate) }}</h3>
         <p class="metric-label">Top 3 simple</p>
       </article>
       <article class="glass-card metric-card">
@@ -73,7 +73,7 @@
       </article>
       <article class="glass-card metric-card">
         <p class="eyebrow">Lift</p>
-        <h3 class="metric-value">{{ formatLift(overallLiftValue) }}</h3>
+        <h3 class="metric-value">{{ backtestingLoading && !backtesting ? '...' : formatLift(overallLiftValue) }}</h3>
         <p class="metric-label">Top 3 vs baseline</p>
       </article>
     </section>
@@ -126,7 +126,7 @@
           </div>
         </div>
         <div v-else class="empty-state">
-          {{ lotteryStore.loading ? 'Cargando anomalias...' : 'Sin anomalias detectadas para este rango.' }}
+          {{ analyticsLoading ? 'Cargando anomalias...' : 'Sin anomalias detectadas para este rango.' }}
         </div>
       </article>
     </section>
@@ -136,7 +136,7 @@
         <p class="eyebrow">Calibracion</p>
         <h3 class="section-title">Estado del motor con data real</h3>
         <p class="section-copy">
-          {{ backtesting?.calibration_summary || 'Todavia no hay una lectura de calibracion disponible.' }}
+          {{ backtesting?.calibration_summary || (backtestingLoading ? 'Calibrando backtesting y resumiendo fortalezas...' : 'Todavia no hay una lectura de calibracion disponible.') }}
         </p>
         <div v-if="backtesting?.calibration_notes?.length" class="method-stack calibration-notes">
           <div v-for="note in backtesting.calibration_notes" :key="note" class="anomaly-item">
@@ -166,7 +166,7 @@
         <div class="method-stack">
           <div class="method-line">
             <span>Draws evaluados</span>
-            <strong>{{ backtesting?.overall_total_draws ?? 0 }}</strong>
+            <strong>{{ backtestingLoading && !backtesting ? '...' : (backtesting?.overall_total_draws ?? 0) }}</strong>
           </div>
           <div class="method-line">
             <span>Top 1</span>
@@ -295,7 +295,7 @@
         </div>
       </div>
       <div v-else class="empty-state">
-        {{ lotteryStore.loading ? 'Comparando con la corrida anterior...' : 'Sin cambios fuertes entre corridas recientes.' }}
+        {{ analyticsLoading ? 'Comparando con la corrida anterior...' : 'Sin cambios fuertes entre corridas recientes.' }}
       </div>
     </section>
 
@@ -398,14 +398,14 @@
         </article>
       </div>
       <div v-else class="empty-state">
-        {{ lotteryStore.loading ? 'Calculando tendencia...' : 'Todavia no hay candidatos disponibles.' }}
+        {{ analyticsLoading ? 'Calculando tendencia...' : 'Todavia no hay candidatos disponibles.' }}
       </div>
     </section>
   </AppShell>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { Bar, Line } from 'vue-chartjs'
 import {
   BarElement,
@@ -440,6 +440,9 @@ const query = reactive({
   lottery_name: '',
   days: 30,
 })
+const analyticsLoading = ref(false)
+const backtestingLoading = ref(false)
+const analyticsError = ref('')
 
 const trends = computed(() => lotteryStore.trends)
 const possibleResults = computed(() => lotteryStore.possibleResults)
@@ -462,8 +465,8 @@ const chartPalette = {
 }
 
 const chartStatusMessage = computed(() => {
-  if (lotteryStore.loading) return 'Cargando datos analiticos...'
-  if (lotteryStore.error) return 'No se pudo renderizar la grafica con la consulta actual.'
+  if (analyticsLoading.value) return 'Cargando datos analiticos...'
+  if (analyticsError.value) return 'No se pudo renderizar la grafica con la consulta actual.'
   return 'No hay suficientes datos para este rango.'
 })
 
@@ -554,14 +557,34 @@ function buildSharedLotteryParam() {
 async function loadAnalytics() {
   const trendParams = buildTrendParams()
   const selectedLottery = buildSharedLotteryParam()
+  analyticsLoading.value = true
+  analyticsError.value = ''
+  try {
+    const analyticsPayload = selectedLottery ? { lotteries: selectedLottery, top_n: 5 } : { top_n: 5 }
+    const backtestingPayload = selectedLottery
+      ? { days: query.days, lotteries: selectedLottery, top_n: 5 }
+      : { days: query.days, top_n: 5 }
 
-  await Promise.all([
-    lotteryStore.fetchTrends(trendParams),
-    lotteryStore.fetchPossibleResults(selectedLottery ? { lotteries: selectedLottery, top_n: 5 } : { top_n: 5 }),
-    lotteryStore.fetchBacktesting(
-      selectedLottery ? { days: query.days, lotteries: selectedLottery, top_n: 5 } : { days: query.days, top_n: 5 },
-    ),
-  ])
+    await Promise.all([
+      lotteryStore.fetchTrends(trendParams, { silent: true }),
+      lotteryStore.fetchPossibleResults(analyticsPayload, { silent: true }),
+    ])
+
+    backtestingLoading.value = true
+    lotteryStore.fetchBacktesting(backtestingPayload, { silent: true })
+      .catch(() => {
+        if (!lotteryStore.backtesting) {
+          analyticsError.value = 'El backtesting sigue procesandose o no pudo cargarse con este rango.'
+        }
+      })
+      .finally(() => {
+        backtestingLoading.value = false
+      })
+  } catch (_error) {
+    analyticsError.value = 'No se pudieron cargar las tendencias o predicciones para este rango.'
+  } finally {
+    analyticsLoading.value = false
+  }
 }
 
 function asPercent(value) {
@@ -603,6 +626,10 @@ onMounted(async () => {
 
 .compact-copy {
   margin-top: 0.5rem;
+}
+
+.calibration-notes {
+  margin-top: 1rem;
 }
 
 .analytics-metrics,

@@ -192,6 +192,8 @@ async def get_backtesting(
         snapshot = _default_snapshot("backtesting:default:")
         if snapshot:
             return snapshot
+        monitoring_service.start_backtesting_snapshot_refresh()
+        return analytics_service.build_backtesting_placeholder_summary(days=days)
 
     selected_lotteries = [item.strip() for item in lotteries.split(",")] if lotteries else None
     try:

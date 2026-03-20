@@ -75,28 +75,28 @@ export const useLotteryStore = defineStore('lottery', () => {
     })
   }
 
-  async function fetchSchedules() {
+  async function fetchSchedules(options = {}) {
     return withLoader(async () => {
       const response = await api.get('/schedules')
       schedules.value = response.data
       return response.data
-    })
+    }, options)
   }
 
-  async function fetchTrends(params = {}) {
+  async function fetchTrends(params = {}, options = {}) {
     return withLoader(async () => {
       const response = await api.get('/analytics/trends', { params })
       trends.value = response.data
       return response.data
-    })
+    }, options)
   }
 
-  async function fetchPossibleResults(params = {}) {
+  async function fetchPossibleResults(params = {}, options = {}) {
     return withLoader(async () => {
       const response = await api.get('/analytics/possible-results', { params })
       possibleResults.value = response.data
       return response.data
-    })
+    }, options)
   }
 
   async function refreshResults() {
@@ -163,12 +163,12 @@ export const useLotteryStore = defineStore('lottery', () => {
     })
   }
 
-  async function fetchBacktesting(params = {}) {
+  async function fetchBacktesting(params = {}, options = {}) {
     return withLoader(async () => {
       const response = await api.get('/analytics/backtesting', { params })
       backtesting.value = response.data
       return response.data
-    })
+    }, options)
   }
 
   async function fetchUsers() {

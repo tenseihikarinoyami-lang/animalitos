@@ -10,11 +10,15 @@
         <h3 class="section-title">America/Caracas</h3>
         <p class="section-copy">La aplicacion unifica countdown, historico y scheduler bajo la misma zona horaria.</p>
       </div>
-      <button class="btn-ghost" :disabled="lotteryStore.loading" @click="lotteryStore.fetchSchedules()">
-        <span v-if="lotteryStore.loading" class="spinner"></span>
+      <button class="btn-ghost" :disabled="scheduleLoading" @click="loadSchedules">
+        <span v-if="scheduleLoading" class="spinner"></span>
         <span v-else>Recargar horarios</span>
       </button>
     </section>
+
+    <p v-if="scheduleError" class="schedule-error">
+      {{ scheduleError }}
+    </p>
 
     <section class="schedule-grid">
       <article v-for="schedule in schedules" :key="schedule.canonical_lottery_name" class="glass-card section-card schedule-card">
@@ -44,16 +48,31 @@
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import AppShell from '@/components/AppShell.vue'
 import { useLotteryStore } from '@/stores/lottery'
 import { handleIconError, lotteryIconUrl } from '@/utils/monitoring'
 
 const lotteryStore = useLotteryStore()
 const schedules = computed(() => lotteryStore.schedules)
+const scheduleLoading = ref(false)
+const scheduleError = ref('')
+
+async function loadSchedules() {
+  scheduleLoading.value = true
+  scheduleError.value = ''
+  try {
+    const response = await lotteryStore.fetchSchedules({ silent: true })
+    if (!response) {
+      scheduleError.value = 'No se pudieron cargar los horarios desde el backend.'
+    }
+  } finally {
+    scheduleLoading.value = false
+  }
+}
 
 onMounted(async () => {
-  await lotteryStore.fetchSchedules()
+  await loadSchedules()
 })
 </script>
 
@@ -70,6 +89,15 @@ onMounted(async () => {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 1rem;
+}
+
+.schedule-error {
+  margin: 0 0 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: 16px;
+  background: rgba(255, 107, 107, 0.12);
+  border: 1px solid rgba(255, 107, 107, 0.22);
+  color: #ffd0d0;
 }
 
 .schedule-head {

@@ -265,6 +265,26 @@ def test_internal_scheduler_refresh_is_queued(client, monkeypatch):
     assert response.json()["details"]["job_id"] == "refresh-123"
 
 
+def test_default_backtesting_endpoint_returns_placeholder_when_snapshot_is_missing(client, admin_headers, monkeypatch):
+    monkeypatch.setattr("app.api.monitoring.db_service.get_latest_analytics_snapshot", lambda snapshot_prefix=None: None)
+    triggered = {"called": False}
+
+    def fake_start_backtesting_snapshot_refresh():
+        triggered["called"] = True
+        return True
+
+    monkeypatch.setattr(
+        "app.api.monitoring.monitoring_service.start_backtesting_snapshot_refresh",
+        fake_start_backtesting_snapshot_refresh,
+    )
+
+    response = client.get("/api/analytics/backtesting", headers=admin_headers, params={"days": 30})
+
+    assert response.status_code == 200
+    assert response.json()["calibration_summary"].startswith("El snapshot de backtesting")
+    assert triggered["called"] is True
+
+
 def test_export_routes_return_downloadable_files(client, admin_headers):
     today = local_now().date()
     db_service.upsert_results(

@@ -1501,6 +1501,60 @@ class AnalyticsService:
             weakest_hours=calibration_payload["weakest_hours"],
         )
 
+    def build_backtesting_placeholder_summary(
+        self,
+        days: int | None = None,
+        lotteries: list[str] | None = None,
+    ) -> BacktestingSummary:
+        days = days or settings.analytics_default_days
+        selected_lotteries = self._normalize_lotteries(lotteries)
+        return BacktestingSummary(
+            generated_at=utc_now(),
+            days=days,
+            methodology_version=self.METHODOLOGY_VERSION,
+            baseline_methodology_version=self.BASELINE_METHODOLOGY_VERSION,
+            overall_total_draws=0,
+            overall_top_1_rate=0,
+            overall_top_3_rate=0,
+            overall_top_5_rate=0,
+            baseline_overall_top_1_rate=0,
+            baseline_overall_top_3_rate=0,
+            baseline_overall_top_5_rate=0,
+            beats_baseline=False,
+            by_lottery=[
+                BacktestingLotteryMetric(
+                    lottery_name=lottery_name,
+                    total_draws=0,
+                    top_1_hits=0,
+                    top_3_hits=0,
+                    top_5_hits=0,
+                    top_1_rate=0,
+                    top_3_rate=0,
+                    top_5_rate=0,
+                    baseline_top_1_hits=0,
+                    baseline_top_3_hits=0,
+                    baseline_top_5_hits=0,
+                    baseline_top_1_rate=0,
+                    baseline_top_3_rate=0,
+                    baseline_top_5_rate=0,
+                    lift_top_3=0,
+                    beats_baseline=False,
+                )
+                for lottery_name in selected_lotteries
+            ],
+            by_hour=[],
+            calibration_summary="El snapshot de backtesting se esta recalculando en segundo plano.",
+            calibration_notes=[
+                "La vista ya puede usarse mientras el backtesting termina de regenerarse.",
+                "En cuanto el snapshot quede listo, la pagina mostrara lift, fortalezas y horas debiles reales.",
+            ],
+            weight_adjustments=self._build_weight_adjustments(),
+            strongest_lotteries=[],
+            weakest_lotteries=[],
+            strongest_hours=[],
+            weakest_hours=[],
+        )
+
     def build_quality_report(self, days: int | None = None, lotteries: list[str] | None = None) -> QualityReportResponse:
         days = days or settings.quality_default_days
         selected_lotteries = self._normalize_lotteries(lotteries)
