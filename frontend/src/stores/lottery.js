@@ -9,6 +9,9 @@ export const useLotteryStore = defineStore('lottery', () => {
   const schedules = ref([])
   const trends = ref(null)
   const possibleResults = ref(null)
+  const enjaulados = ref(null)
+  const strategies = ref(null)
+  const todayReview = ref(null)
   const systemStatus = ref(null)
   const qualityReport = ref(null)
   const auditLogs = ref([])
@@ -95,6 +98,30 @@ export const useLotteryStore = defineStore('lottery', () => {
     return withLoader(async () => {
       const response = await api.get('/analytics/possible-results', { params })
       possibleResults.value = response.data
+      return response.data
+    }, options)
+  }
+
+  async function fetchEnjaulados(params = {}, options = {}) {
+    return withLoader(async () => {
+      const response = await api.get('/analytics/enjaulados', { params })
+      enjaulados.value = response.data
+      return response.data
+    }, options)
+  }
+
+  async function fetchStrategies(params = {}, options = {}) {
+    return withLoader(async () => {
+      const response = await api.get('/analytics/strategies', { params })
+      strategies.value = response.data
+      return response.data
+    }, options)
+  }
+
+  async function fetchTodayReview(params = {}, options = {}) {
+    return withLoader(async () => {
+      const response = await api.get('/analytics/today-review', { params })
+      todayReview.value = response.data
       return response.data
     }, options)
   }
@@ -232,6 +259,9 @@ export const useLotteryStore = defineStore('lottery', () => {
     schedules,
     trends,
     possibleResults,
+    enjaulados,
+    strategies,
+    todayReview,
     systemStatus,
     qualityReport,
     auditLogs,
@@ -247,6 +277,9 @@ export const useLotteryStore = defineStore('lottery', () => {
     fetchSchedules,
     fetchTrends,
     fetchPossibleResults,
+    fetchEnjaulados,
+    fetchStrategies,
+    fetchTodayReview,
     fetchSystemStatus,
     fetchQualityReport,
     fetchAuditLogs,

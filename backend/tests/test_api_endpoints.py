@@ -310,6 +310,111 @@ def test_export_routes_return_downloadable_files(client, admin_headers):
     assert len(pdf_response.content) > 100
 
 
+def test_enjaulados_strategies_and_today_review_routes(client, admin_headers, monkeypatch):
+    generated_at = datetime(2026, 3, 20, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(
+        "app.api.monitoring.analytics_service.build_enjaulados_summary",
+        lambda force_refresh=False: {
+            "generated_at": generated_at,
+            "lotteries": [
+                {
+                    "canonical_lottery_name": "Lotto Activo",
+                    "source_url": "https://example.com/enjaulados",
+                    "generated_at": generated_at,
+                    "items": [
+                        {
+                            "animal_number": 17,
+                            "animal_name": "Pavo",
+                            "last_seen_date": "2026-03-09",
+                            "days_without_hit": 11,
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "app.api.monitoring.analytics_service.build_strategies_summary",
+        lambda force_refresh=False: {
+            "generated_at": generated_at,
+            "draw_date": "2026-03-20",
+            "methodology_version": "ops-intraday-ranking-v6",
+            "sources": [
+                {
+                    "key": "la-bola-de-cristal",
+                    "title": "La Bola de Cristal",
+                    "source_url": "https://example.com/bola",
+                    "generated_at": generated_at,
+                    "animals": [{"animal_number": 6, "animal_name": "Rana"}],
+                }
+            ],
+            "performance": [
+                {
+                    "key": "la-bola-de-cristal",
+                    "title": "La Bola de Cristal",
+                    "hit_count_today": 2,
+                    "evaluated_results_today": 10,
+                    "hit_rate_today": 0.2,
+                    "matching_animals_today": [{"animal_number": 6, "animal_name": "Rana"}],
+                    "overlap_with_system_top5": ["Lotto Activo: 06"],
+                }
+            ],
+            "consensus": [
+                {
+                    "animal_number": 6,
+                    "animal_name": "Rana",
+                    "mention_count": 2,
+                    "sources": ["La Bola de Cristal", "La Formula Ganadora"],
+                    "overlap_with_system_top5": ["Lotto Activo"],
+                    "hits_today": 1,
+                }
+            ],
+            "notes": ["Senales externas solo para comparacion."],
+        },
+    )
+    monkeypatch.setattr(
+        "app.api.monitoring.analytics_service.build_today_prediction_review",
+        lambda draw_date=None: {
+            "generated_at": generated_at,
+            "draw_date": "2026-03-20",
+            "methodology_version": "ops-intraday-ranking-v6",
+            "evaluated_draws": 3,
+            "hit_top_1": 1,
+            "hit_top_3": 1,
+            "hit_top_5": 2,
+            "hit_top_1_rate": 0.3333,
+            "hit_top_3_rate": 0.3333,
+            "hit_top_5_rate": 0.6667,
+            "by_lottery": [
+                {
+                    "canonical_lottery_name": "Lotto Activo",
+                    "evaluated_draws": 1,
+                    "hit_top_1": 0,
+                    "hit_top_3": 0,
+                    "hit_top_5": 1,
+                    "hit_top_1_rate": 0,
+                    "hit_top_3_rate": 0,
+                    "hit_top_5_rate": 1,
+                }
+            ],
+            "windows": [],
+            "notes": ["Top 5 acerto 2 de 3."],
+        },
+    )
+
+    enjaulados_response = client.get("/api/analytics/enjaulados", headers=admin_headers)
+    strategies_response = client.get("/api/analytics/strategies", headers=admin_headers)
+    review_response = client.get("/api/analytics/today-review", headers=admin_headers)
+
+    assert enjaulados_response.status_code == 200
+    assert strategies_response.status_code == 200
+    assert review_response.status_code == 200
+    assert enjaulados_response.json()["lotteries"][0]["items"][0]["animal_number"] == 17
+    assert strategies_response.json()["sources"][0]["title"] == "La Bola de Cristal"
+    assert review_response.json()["hit_top_5"] == 2
+
+
 def test_admin_user_management_and_password_rotation(client, admin_headers):
     create_response = client.post(
         "/api/admin/users",

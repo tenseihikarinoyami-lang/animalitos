@@ -17,19 +17,27 @@ from app.models.schemas import (
     DashboardOverview,
     DrawPredictionCandidate,
     DrawPredictionWindow,
+    EnjauladosResponse,
     IngestionRun,
     LotteryOverviewCard,
     LotteryPossibleResults,
     PossibleResultCandidate,
     PossibleResultsSummary,
+    PredictionReviewLotteryMetric,
+    PredictionReviewSummary,
+    PredictionReviewWindow,
     QualityLotteryRecord,
     QualityReportResponse,
     ScoreComponent,
     SystemStatusResponse,
+    StrategiesResponse,
+    StrategyConsensusAnimal,
+    StrategyPerformance,
     TrendBucket,
     get_animal_name,
 )
 from app.services.database import db_service
+from app.services.external_signals import external_signals_service
 from app.services.schedule import build_next_draw, expected_draws_by_now, local_now, parse_time_local, utc_now
 from app.services.telegram import telegram_service
 
@@ -1553,6 +1561,274 @@ class AnalyticsService:
             weakest_lotteries=[],
             strongest_hours=[],
             weakest_hours=[],
+        )
+
+    def build_enjaulados_summary(self, force_refresh: bool = False) -> EnjauladosResponse:
+        return external_signals_service.get_enjaulados(force_refresh=force_refresh)
+
+    def _coerce_local_draw_datetime(self, draw_date_value, draw_time_local: str) -> datetime:
+        draw_date = draw_date_value
+        if isinstance(draw_date_value, str):
+            draw_date = date.fromisoformat(draw_date_value)
+        return datetime.combine(draw_date, parse_time_local(draw_time_local), tzinfo=local_now().tzinfo)
+
+    def build_today_prediction_review(self, draw_date: date | None = None) -> PredictionReviewSummary:
+        draw_date = draw_date or local_now().date()
+        draw_date_key = draw_date.isoformat()
+        results = db_service.get_results(start_date=draw_date_key, end_date=draw_date_key, limit=None)
+        target_results = [
+            item for item in results if item.get("canonical_lottery_name") in PRIMARY_LOTTERIES and ":" in item.get("draw_time_local", "")
+        ]
+        prediction_runs = db_service.get_prediction_runs(limit=500)
+
+        valid_runs = []
+        for run in prediction_runs:
+            summary = run.get("summary") or {}
+            generated_at = run.get("generated_at")
+            if isinstance(generated_at, str):
+                generated_at = self._coerce_datetime(generated_at)
+            if not generated_at or summary.get("reference_date") not in {None, draw_date_key}:
+                continue
+            valid_runs.append((generated_at, run))
+        valid_runs.sort(key=lambda item: item[0])
+
+        windows = []
+        totals = {"evaluated": 0, "top1": 0, "top3": 0, "top5": 0}
+        by_lottery = {}
+
+        for result in sorted(target_results, key=lambda item: self._coerce_datetime(item["draw_datetime_utc"])):
+            lottery_name = result["canonical_lottery_name"]
+            draw_time_local = result["draw_time_local"]
+            actual_number = int(result["animal_number"])
+            draw_datetime_utc = self._coerce_datetime(result["draw_datetime_utc"])
+            matched_window = None
+            matched_run = None
+
+            for generated_at, run in valid_runs:
+                if generated_at > draw_datetime_utc:
+                    continue
+                summary = run.get("summary") or {}
+                for lottery in summary.get("lotteries", []):
+                    if lottery.get("canonical_lottery_name") != lottery_name:
+                        continue
+                    for window in lottery.get("draw_predictions", []):
+                        if window.get("draw_time_local") == draw_time_local:
+                            matched_window = window
+                            matched_run = run
+
+            if not matched_window:
+                windows.append(
+                    PredictionReviewWindow(
+                        canonical_lottery_name=lottery_name,
+                        draw_date=draw_date,
+                        draw_time_local=draw_time_local,
+                        actual_animal_number=actual_number,
+                        actual_animal_name=result["animal_name"],
+                        prediction_available=False,
+                    )
+                )
+                continue
+
+            top_numbers = [int(candidate.get("animal_number")) for candidate in matched_window.get("candidates", [])]
+            top_1 = top_numbers[:1]
+            top_3 = top_numbers[:3]
+            top_5 = top_numbers[:5]
+            hit_top_1 = actual_number in top_1
+            hit_top_3 = actual_number in top_3
+            hit_top_5 = actual_number in top_5
+            actual_rank = top_numbers.index(actual_number) + 1 if actual_number in top_numbers else None
+
+            window_row = PredictionReviewWindow(
+                canonical_lottery_name=lottery_name,
+                draw_date=draw_date,
+                draw_time_local=draw_time_local,
+                actual_animal_number=actual_number,
+                actual_animal_name=result["animal_name"],
+                predicted_at=matched_run.get("generated_at"),
+                prediction_delivery_status=matched_run.get("delivery_status"),
+                top_1=top_1,
+                top_3=top_3,
+                top_5=top_5,
+                hit_top_1=hit_top_1,
+                hit_top_3=hit_top_3,
+                hit_top_5=hit_top_5,
+                actual_rank=actual_rank,
+                prediction_available=True,
+            )
+            windows.append(window_row)
+
+            totals["evaluated"] += 1
+            totals["top1"] += int(hit_top_1)
+            totals["top3"] += int(hit_top_3)
+            totals["top5"] += int(hit_top_5)
+
+            lottery_metric = by_lottery.setdefault(
+                lottery_name,
+                {"evaluated": 0, "top1": 0, "top3": 0, "top5": 0},
+            )
+            lottery_metric["evaluated"] += 1
+            lottery_metric["top1"] += int(hit_top_1)
+            lottery_metric["top3"] += int(hit_top_3)
+            lottery_metric["top5"] += int(hit_top_5)
+
+        lottery_rows = []
+        for lottery_name in PRIMARY_LOTTERIES:
+            metric = by_lottery.get(lottery_name, {"evaluated": 0, "top1": 0, "top3": 0, "top5": 0})
+            evaluated = metric["evaluated"]
+            lottery_rows.append(
+                PredictionReviewLotteryMetric(
+                    canonical_lottery_name=lottery_name,
+                    evaluated_draws=evaluated,
+                    hit_top_1=metric["top1"],
+                    hit_top_3=metric["top3"],
+                    hit_top_5=metric["top5"],
+                    hit_top_1_rate=round(metric["top1"] / evaluated, 4) if evaluated else 0,
+                    hit_top_3_rate=round(metric["top3"] / evaluated, 4) if evaluated else 0,
+                    hit_top_5_rate=round(metric["top5"] / evaluated, 4) if evaluated else 0,
+                )
+            )
+
+        notes = []
+        missing_predictions = len([window for window in windows if not window.prediction_available])
+        if missing_predictions:
+            notes.append(
+                f"{missing_predictions} sorteos del dia no pudieron cruzarse con una corrida previa guardada del sistema."
+            )
+        if totals["evaluated"]:
+            notes.append(
+                f"Resumen operativo: Top 5 acerto {totals['top5']} de {totals['evaluated']} sorteos evaluados."
+            )
+
+        return PredictionReviewSummary(
+            generated_at=utc_now(),
+            draw_date=draw_date,
+            methodology_version=self.METHODOLOGY_VERSION,
+            evaluated_draws=totals["evaluated"],
+            hit_top_1=totals["top1"],
+            hit_top_3=totals["top3"],
+            hit_top_5=totals["top5"],
+            hit_top_1_rate=round(totals["top1"] / totals["evaluated"], 4) if totals["evaluated"] else 0,
+            hit_top_3_rate=round(totals["top3"] / totals["evaluated"], 4) if totals["evaluated"] else 0,
+            hit_top_5_rate=round(totals["top5"] / totals["evaluated"], 4) if totals["evaluated"] else 0,
+            by_lottery=lottery_rows,
+            windows=sorted(windows, key=lambda item: (item.draw_date, item.draw_time_local, item.canonical_lottery_name)),
+            notes=notes,
+        )
+
+    def build_strategies_summary(self, force_refresh: bool = False) -> StrategiesResponse:
+        strategies = external_signals_service.get_strategy_sources(force_refresh=force_refresh)
+        today = local_now().date()
+        today_results = [
+            item
+            for item in db_service.get_results(start_date=today.isoformat(), end_date=today.isoformat(), limit=None)
+            if item.get("canonical_lottery_name") in PRIMARY_LOTTERIES
+        ]
+        latest_prediction = db_service.get_latest_prediction_run() or {}
+        latest_summary = latest_prediction.get("summary") or {}
+        if not latest_summary:
+            latest_summary = self.build_possible_results_summary().model_dump()
+
+        system_top5_by_lottery = {}
+        for lottery in latest_summary.get("lotteries", []):
+            draw_predictions = lottery.get("draw_predictions") or []
+            if draw_predictions:
+                first_window = draw_predictions[0]
+                system_top5_by_lottery[lottery.get("canonical_lottery_name")] = [
+                    int(candidate.get("animal_number"))
+                    for candidate in first_window.get("candidates", [])[:5]
+                ]
+            else:
+                system_top5_by_lottery[lottery.get("canonical_lottery_name")] = [
+                    int(candidate.get("animal_number"))
+                    for candidate in lottery.get("top_5", [])[:5]
+                ]
+
+        performance_rows = []
+        consensus_counter = defaultdict(set)
+        hits_counter = Counter()
+        actual_numbers_today = [int(item["animal_number"]) for item in today_results]
+
+        for source in strategies:
+            source_numbers = [item.animal_number for item in source.animals]
+            for animal_number in source_numbers:
+                consensus_counter[animal_number].add(source.title)
+                hits_counter[animal_number] += actual_numbers_today.count(animal_number)
+
+            matching_animals = []
+            for animal_number in source_numbers:
+                if animal_number in actual_numbers_today:
+                    matching_animals.append(
+                        {
+                            "animal_number": animal_number,
+                            "animal_name": get_animal_name(animal_number),
+                        }
+                    )
+
+            overlap_labels = []
+            for lottery_name, system_numbers in system_top5_by_lottery.items():
+                overlaps = [number for number in source_numbers if number in system_numbers]
+                if overlaps:
+                    overlap_labels.append(
+                        f"{lottery_name}: {', '.join(f'{number:02d}' for number in overlaps)}"
+                    )
+
+            performance_rows.append(
+                StrategyPerformance(
+                    key=source.key,
+                    title=source.title,
+                    hit_count_today=sum(actual_numbers_today.count(number) for number in source_numbers),
+                    evaluated_results_today=len(today_results),
+                    hit_rate_today=round(
+                        (
+                            sum(actual_numbers_today.count(number) for number in source_numbers)
+                            / len(today_results)
+                        ),
+                        4,
+                    )
+                    if today_results
+                    else 0,
+                    matching_animals_today=matching_animals,
+                    overlap_with_system_top5=overlap_labels,
+                )
+            )
+
+        consensus_rows = []
+        for animal_number, source_titles in sorted(
+            consensus_counter.items(),
+            key=lambda item: (len(item[1]), hits_counter[item[0]], -item[0]),
+            reverse=True,
+        ):
+            overlap_labels = [
+                lottery_name
+                for lottery_name, system_numbers in system_top5_by_lottery.items()
+                if animal_number in system_numbers
+            ]
+            consensus_rows.append(
+                StrategyConsensusAnimal(
+                    animal_number=animal_number,
+                    animal_name=get_animal_name(animal_number),
+                    mention_count=len(source_titles),
+                    sources=sorted(source_titles),
+                    overlap_with_system_top5=overlap_labels,
+                    hits_today=hits_counter.get(animal_number, 0),
+                )
+            )
+
+        notes = [
+            "Las estrategias externas se muestran como senales comparativas; no sustituyen la medicion real del motor.",
+            "El consenso destaca animalitos repetidos entre varias fuentes y su cruce con el top 5 actual del sistema.",
+        ]
+        if today_results:
+            notes.append(f"Hoy ya se evaluaron {len(today_results)} resultados confirmados contra estas fuentes externas.")
+
+        return StrategiesResponse(
+            generated_at=utc_now(),
+            draw_date=today,
+            methodology_version=self.METHODOLOGY_VERSION,
+            sources=strategies,
+            performance=sorted(performance_rows, key=lambda item: (item.hit_count_today, item.hit_rate_today), reverse=True),
+            consensus=consensus_rows[:12],
+            notes=notes,
         )
 
     def build_quality_report(self, days: int | None = None, lotteries: list[str] | None = None) -> QualityReportResponse:

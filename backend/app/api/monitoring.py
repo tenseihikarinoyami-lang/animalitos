@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from app.api.auth import get_current_user
@@ -6,9 +8,12 @@ from app.models.schemas import (
     AnalyticsTrends,
     BacktestingSummary,
     DashboardOverview,
+    EnjauladosResponse,
     PossibleResultsSummary,
+    PredictionReviewSummary,
     ResultQueryResponse,
     ScheduleEntry,
+    StrategiesResponse,
 )
 from app.services.analytics import analytics_service
 from app.services.database import db_service
@@ -203,6 +208,32 @@ async def get_backtesting(
         if snapshot:
             return snapshot
         raise
+
+
+@router.get("/analytics/enjaulados", response_model=EnjauladosResponse)
+async def get_enjaulados(
+    force_refresh: bool = False,
+    current_user: dict = Depends(get_current_user),
+):
+    return analytics_service.build_enjaulados_summary(force_refresh=force_refresh)
+
+
+@router.get("/analytics/strategies", response_model=StrategiesResponse)
+async def get_strategies(
+    force_refresh: bool = False,
+    current_user: dict = Depends(get_current_user),
+):
+    return analytics_service.build_strategies_summary(force_refresh=force_refresh)
+
+
+@router.get("/analytics/today-review", response_model=PredictionReviewSummary)
+async def get_today_review(
+    draw_date: str | None = None,
+    current_user: dict = Depends(get_current_user),
+):
+    return analytics_service.build_today_prediction_review(
+        draw_date=None if not draw_date else date.fromisoformat(draw_date)
+    )
 
 
 @router.post("/internal/scheduler/refresh")

@@ -354,6 +354,112 @@ class BacktestingSummary(BaseModel):
     weakest_hours: list[BacktestingHourMetric] = Field(default_factory=list)
 
 
+class PredictionReviewWindow(BaseModel):
+    canonical_lottery_name: str
+    draw_date: date
+    draw_time_local: str
+    actual_animal_number: int
+    actual_animal_name: str
+    predicted_at: datetime | None = None
+    prediction_delivery_status: str | None = None
+    top_1: list[int] = Field(default_factory=list)
+    top_3: list[int] = Field(default_factory=list)
+    top_5: list[int] = Field(default_factory=list)
+    hit_top_1: bool = False
+    hit_top_3: bool = False
+    hit_top_5: bool = False
+    actual_rank: int | None = None
+    prediction_available: bool = False
+
+
+class PredictionReviewLotteryMetric(BaseModel):
+    canonical_lottery_name: str
+    evaluated_draws: int
+    hit_top_1: int
+    hit_top_3: int
+    hit_top_5: int
+    hit_top_1_rate: float
+    hit_top_3_rate: float
+    hit_top_5_rate: float
+
+
+class PredictionReviewSummary(BaseModel):
+    generated_at: datetime
+    draw_date: date
+    methodology_version: str
+    evaluated_draws: int
+    hit_top_1: int
+    hit_top_3: int
+    hit_top_5: int
+    hit_top_1_rate: float
+    hit_top_3_rate: float
+    hit_top_5_rate: float
+    by_lottery: list[PredictionReviewLotteryMetric] = Field(default_factory=list)
+    windows: list[PredictionReviewWindow] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class EnjauladoAnimal(BaseModel):
+    animal_number: int
+    animal_name: str
+    last_seen_date: date | None = None
+    days_without_hit: int
+
+
+class EnjauladosLotterySummary(BaseModel):
+    canonical_lottery_name: str
+    source_url: str
+    generated_at: datetime
+    items: list[EnjauladoAnimal] = Field(default_factory=list)
+
+
+class EnjauladosResponse(BaseModel):
+    generated_at: datetime
+    lotteries: list[EnjauladosLotterySummary] = Field(default_factory=list)
+
+
+class StrategyAnimal(BaseModel):
+    animal_number: int
+    animal_name: str
+
+
+class StrategySource(BaseModel):
+    key: str
+    title: str
+    source_url: str
+    generated_at: datetime
+    animals: list[StrategyAnimal] = Field(default_factory=list)
+
+
+class StrategyPerformance(BaseModel):
+    key: str
+    title: str
+    hit_count_today: int
+    evaluated_results_today: int
+    hit_rate_today: float
+    matching_animals_today: list[StrategyAnimal] = Field(default_factory=list)
+    overlap_with_system_top5: list[str] = Field(default_factory=list)
+
+
+class StrategyConsensusAnimal(BaseModel):
+    animal_number: int
+    animal_name: str
+    mention_count: int
+    sources: list[str] = Field(default_factory=list)
+    overlap_with_system_top5: list[str] = Field(default_factory=list)
+    hits_today: int = 0
+
+
+class StrategiesResponse(BaseModel):
+    generated_at: datetime
+    draw_date: date
+    methodology_version: str
+    sources: list[StrategySource] = Field(default_factory=list)
+    performance: list[StrategyPerformance] = Field(default_factory=list)
+    consensus: list[StrategyConsensusAnimal] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class QualityLotteryRecord(BaseModel):
     draw_date: date
     canonical_lottery_name: str

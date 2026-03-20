@@ -75,9 +75,11 @@ const navItems = [
   { to: '/monitoring', label: 'Monitoreo', icon: '02' },
   { to: '/results', label: 'Historico', icon: '03' },
   { to: '/statistics', label: 'Analitica', icon: '04' },
-  { to: '/schedule', label: 'Horarios', icon: '05' },
-  { to: '/admin', label: 'Admin', icon: '06', adminOnly: true },
-  { to: '/account', label: 'Cuenta', icon: '07' },
+  { to: '/enjaulados', label: 'Enjaulados', icon: '05' },
+  { to: '/strategies', label: 'Estrategias', icon: '06' },
+  { to: '/schedule', label: 'Horarios', icon: '07' },
+  { to: '/admin', label: 'Admin', icon: '08', adminOnly: true },
+  { to: '/account', label: 'Cuenta', icon: '09' },
 ]
 
 const visibleNavItems = computed(() =>

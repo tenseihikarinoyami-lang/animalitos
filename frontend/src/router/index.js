@@ -31,6 +31,18 @@ const routes = [
     meta: { requiresAuth: true },
   },
   {
+    path: '/enjaulados',
+    name: 'enjaulados',
+    component: () => import('@/views/EnjauladosView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/strategies',
+    name: 'strategies',
+    component: () => import('@/views/StrategiesView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
     path: '/schedule',
     name: 'schedule',
     component: () => import('@/views/ScheduleView.vue'),
