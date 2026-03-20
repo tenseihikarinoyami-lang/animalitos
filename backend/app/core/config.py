@@ -1,3 +1,5 @@
+import re
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -27,6 +29,7 @@ class Settings(BaseSettings):
     debug: bool = True
     app_timezone: str = "America/Caracas"
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
+    cors_origin_regex: str = ""
     bootstrap_admin_username: str = "admin"
     bootstrap_admin_email: str = "admin@animalitos.com"
     bootstrap_admin_full_name: str = "Administrator"
@@ -65,6 +68,23 @@ class Settings(BaseSettings):
         if self.frontend_public_url and self.frontend_public_url not in origins:
             origins.append(self.frontend_public_url)
         return origins
+
+    @property
+    def cors_origin_regex_value(self) -> str | None:
+        explicit_regex = self.cors_origin_regex.strip()
+        if explicit_regex:
+            return explicit_regex
+
+        frontend_origin = self.frontend_public_url.strip()
+        if not (frontend_origin.startswith("https://") and frontend_origin.endswith(".vercel.app")):
+            return None
+
+        host = frontend_origin.removeprefix("https://").removesuffix(".vercel.app")
+        if not host:
+            return None
+
+        escaped = re.escape(host)
+        return rf"^https://{escaped}(?:-[a-z0-9-]+)?\.vercel\.app$"
 
     @property
     def is_production(self) -> bool:

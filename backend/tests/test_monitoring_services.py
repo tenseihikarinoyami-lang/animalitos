@@ -1,3 +1,4 @@
+import re
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -55,6 +56,24 @@ def test_prepare_for_storage_converts_nested_datetimes_to_strings():
     assert prepared["nested"][0] == stamp.isoformat()
     assert prepared["nested"][1]["date"] == stamp.date().isoformat()
     assert prepared["nested"][1]["ts"] == stamp.isoformat()
+
+
+def test_vercel_preview_cors_regex_is_derived_from_frontend_public_url():
+    original_frontend_public_url = settings.frontend_public_url
+    original_cors_origin_regex = settings.cors_origin_regex
+    try:
+        settings.frontend_public_url = "https://animalitos-frontend.vercel.app"
+        settings.cors_origin_regex = ""
+
+        pattern = settings.cors_origin_regex_value
+
+        assert pattern is not None
+        assert re.match(pattern, "https://animalitos-frontend.vercel.app")
+        assert re.match(pattern, "https://animalitos-frontend-h8y77gu0y-yami-kurans-projects.vercel.app")
+        assert not re.match(pattern, "https://otro-proyecto.vercel.app")
+    finally:
+        settings.frontend_public_url = original_frontend_public_url
+        settings.cors_origin_regex = original_cors_origin_regex
 
 
 def test_explicit_postgres_failure_does_not_fallback_to_mock(monkeypatch):

@@ -1,9 +1,9 @@
 const CACHE_NAME = 'animalitos-monitor-v3'
-const STATIC_ASSETS = ['/manifest.webmanifest']
+const STATIC_ASSETS = []
 
 self.addEventListener('install', (event) => {
   self.skipWaiting()
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS)))
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS)).catch(() => undefined))
 })
 
 self.addEventListener('activate', (event) => {
@@ -43,7 +43,6 @@ self.addEventListener('fetch', (event) => {
 
   const isStaticAsset =
     requestUrl.pathname.startsWith('/assets/') ||
-    requestUrl.pathname === '/manifest.webmanifest' ||
     requestUrl.pathname.endsWith('.css') ||
     requestUrl.pathname.endsWith('.js')
 

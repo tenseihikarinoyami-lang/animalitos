@@ -8,7 +8,20 @@
       content="Plataforma de monitoreo y analitica para Lotto Activo, La Granjita y Lotto Activo Internacional."
     />
     <meta name="theme-color" content="#08111f" />
-    <link rel="manifest" href="/manifest.webmanifest" />
+    <script>
+      (function () {
+        var host = window.location.hostname
+        var enablePwa =
+          host === 'localhost' ||
+          host === '127.0.0.1' ||
+          host === 'animalitos-frontend.vercel.app'
+        if (!enablePwa) return
+        var manifestLink = document.createElement('link')
+        manifestLink.rel = 'manifest'
+        manifestLink.href = '/manifest.webmanifest'
+        document.head.appendChild(manifestLink)
+      })()
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

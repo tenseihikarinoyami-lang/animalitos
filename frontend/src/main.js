@@ -44,6 +44,13 @@ router.isReady().then(() => {
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
+    const host = window.location.hostname
+    const shouldRegister =
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === 'animalitos-frontend.vercel.app'
+
+    if (!shouldRegister) return
     navigator.serviceWorker.register('/sw.js').catch(() => {})
   })
 }
