@@ -86,6 +86,12 @@ class DatabaseService:
             return value.isoformat()
         return value
 
+    def _should_allow_postgres_fallback(self) -> bool:
+        return not settings.use_postgres
+
+    def _should_allow_firestore_fallback(self) -> bool:
+        return not settings.use_firebase
+
     def ensure_default_schedules(self) -> None:
         schedules = [deepcopy(entry) for entry in DEFAULT_DRAW_SCHEDULES]
         if self.is_postgres_mode:
@@ -98,6 +104,8 @@ class DatabaseService:
                         connection.execute(statement)
                 return
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    raise
                 self.pg_engine = None
 
         if self.is_firestore_mode:
@@ -109,6 +117,8 @@ class DatabaseService:
                         doc_ref.set(schedule)
                 return
             except Exception:
+                if not self._should_allow_firestore_fallback():
+                    raise
                 self.db = None
 
         for schedule in schedules:
@@ -123,6 +133,8 @@ class DatabaseService:
                     ).mappings()
                     return [self._row_to_dict(row) for row in rows]
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    raise
                 self.pg_engine = None
 
         if self.is_firestore_mode:
@@ -131,6 +143,8 @@ class DatabaseService:
                 schedules = [doc.to_dict() for doc in docs]
                 return sorted(schedules, key=lambda item: item["canonical_lottery_name"])
             except Exception:
+                if not self._should_allow_firestore_fallback():
+                    raise
                 self.db = None
 
         if not self._mock_schedules:
@@ -171,6 +185,8 @@ class DatabaseService:
                     self._users_cache = None
                     return payload["username"]
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    raise
                 self.pg_engine = None
 
         if self.is_firestore_mode:
@@ -191,6 +207,8 @@ class DatabaseService:
                     ).mappings().first()
                     return self._row_to_dict(row) if row else None
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    raise
                 self.pg_engine = None
 
         if self.is_firestore_mode:
@@ -223,6 +241,8 @@ class DatabaseService:
                     self._users_cache = deepcopy(users)
                     return users
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    raise
                 self.pg_engine = None
                 if self._users_cache is not None:
                     return deepcopy(self._users_cache[:limit] if limit and limit > 0 else self._users_cache)
@@ -269,6 +289,8 @@ class DatabaseService:
                     "duplicate_keys": duplicates,
                 }
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    raise
                 self.pg_engine = None
 
         for result in results:
@@ -320,6 +342,10 @@ class DatabaseService:
                     self._set_cached_results(results)
                     return deepcopy(results)
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    if self._results_cache is not None:
+                        return deepcopy(self._results_cache)
+                    raise
                 self.pg_engine = None
                 if self._results_cache is not None:
                     return deepcopy(self._results_cache)
@@ -412,6 +438,8 @@ class DatabaseService:
                     self._ingestion_runs_cache = None
                     return payload["id"]
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    raise
                 self.pg_engine = None
 
         if self.is_firestore_mode:
@@ -450,6 +478,15 @@ class DatabaseService:
                     self._ingestion_runs_cache = deepcopy(runs)
                     return runs
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    if self._ingestion_runs_cache is not None:
+                        cached = deepcopy(self._ingestion_runs_cache)
+                        if trigger_contains:
+                            cached = [item for item in cached if trigger_contains in item.get("trigger", "")]
+                        if status:
+                            cached = [item for item in cached if item.get("status") == status]
+                        return cached[:limit] if limit and limit > 0 else cached
+                    raise
                 self.pg_engine = None
                 if self._ingestion_runs_cache is not None:
                     cached = deepcopy(self._ingestion_runs_cache)
@@ -503,6 +540,8 @@ class DatabaseService:
                     )
                     return snapshot_key
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    raise
                 self.pg_engine = None
 
         if self.is_firestore_mode:
@@ -522,6 +561,8 @@ class DatabaseService:
                     ).first()
                     return deepcopy(row[0]) if row else None
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    raise
                 self.pg_engine = None
 
         if self.is_firestore_mode:
@@ -545,6 +586,8 @@ class DatabaseService:
                     row = connection.execute(statement.limit(1)).first()
                     return deepcopy(row[0]) if row else None
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    raise
                 self.pg_engine = None
 
         if self.is_firestore_mode:
@@ -586,6 +629,8 @@ class DatabaseService:
                     )
                     return data["id"]
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    raise
                 self.pg_engine = None
 
         if self.is_firestore_mode:
@@ -605,6 +650,8 @@ class DatabaseService:
                         statement = statement.limit(limit)
                     return [self._row_to_dict(row) for row in connection.execute(statement).mappings()]
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    raise
                 self.pg_engine = None
 
         if self.is_firestore_mode:
@@ -644,6 +691,8 @@ class DatabaseService:
                     self._audit_logs_cache = None
                     return data["id"]
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    raise
                 self.pg_engine = None
 
         if self.is_firestore_mode:
@@ -666,6 +715,10 @@ class DatabaseService:
                     self._audit_logs_cache = deepcopy(logs)
                     return logs
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    if self._audit_logs_cache is not None:
+                        return deepcopy(self._audit_logs_cache[:limit] if limit and limit > 0 else self._audit_logs_cache)
+                    raise
                 self.pg_engine = None
                 if self._audit_logs_cache is not None:
                     return deepcopy(self._audit_logs_cache[:limit] if limit and limit > 0 else self._audit_logs_cache)
@@ -690,6 +743,11 @@ class DatabaseService:
                 with self.pg_engine.begin() as connection:
                     return int(connection.execute(select(func.count()).select_from(results_table)).scalar_one())
             except Exception:
+                if not self._should_allow_postgres_fallback():
+                    cached = self._results_cache if self._results_cache is not None else []
+                    if cached:
+                        return len(cached)
+                    raise
                 self.pg_engine = None
                 cached = self._results_cache if self._results_cache is not None else []
                 return len(cached)

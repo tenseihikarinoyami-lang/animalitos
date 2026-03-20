@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from app.core.config import settings
 from app.models.schemas import BackfillRequest
 from app.services.analytics import analytics_service
 from app.services.database import db_service
@@ -38,6 +39,34 @@ def test_upsert_results_deduplicates_by_dedupe_key():
     assert first_insert["new_count"] == 1
     assert second_insert["new_count"] == 0
     assert second_insert["duplicate_count"] == 1
+
+
+def test_explicit_postgres_failure_does_not_fallback_to_mock(monkeypatch):
+    class BrokenEngine:
+        def begin(self):
+            raise RuntimeError("postgres-down")
+
+    original_provider = settings.database_provider
+    original_database_url = settings.database_url
+    original_engine = db_service.pg_engine
+    try:
+        monkeypatch.setattr("app.services.database.postgres_initialized", True)
+        settings.database_provider = "postgres"
+        settings.database_url = "postgresql://example"
+        db_service.pg_engine = BrokenEngine()
+
+        with pytest.raises(RuntimeError, match="postgres-down"):
+            db_service.get_schedules()
+
+        assert db_service.pg_engine is not None
+    finally:
+        settings.database_provider = original_provider
+        settings.database_url = original_database_url
+        db_service.pg_engine = original_engine
+
+    settings.database_provider = original_provider
+    settings.database_url = original_database_url
+    db_service.pg_engine = original_engine
 
 
 @pytest.mark.asyncio
