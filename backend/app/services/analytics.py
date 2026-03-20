@@ -33,28 +33,33 @@ from app.services.telegram import telegram_service
 
 
 SCORE_COMPONENTS = [
-    ScoreComponent(key="slot_recent_14d", label="Frecuencia reciente por hora (14d)", weight=0.16),
-    ScoreComponent(key="slot_historical_90d", label="Frecuencia historica por hora (90d)", weight=0.10),
-    ScoreComponent(key="weekday_slot_frequency", label="Coincidencia por dia de semana y hora", weight=0.08),
-    ScoreComponent(key="daypart_frequency", label="Frecuencia por tramo del dia", weight=0.06),
-    ScoreComponent(key="recent_frequency_7d", label="Frecuencia global reciente (7d)", weight=0.08),
-    ScoreComponent(key="recent_frequency_30d", label="Frecuencia global reciente (30d)", weight=0.06),
-    ScoreComponent(key="historical_frequency_90d", label="Frecuencia global historica (90d)", weight=0.04),
-    ScoreComponent(key="last_transition", label="Transicion desde el ultimo resultado", weight=0.10),
-    ScoreComponent(key="pair_context", label="Pareja previa coincidente", weight=0.08),
-    ScoreComponent(key="trio_context", label="Trio previo coincidente", weight=0.06),
-    ScoreComponent(key="prefix_overlap", label="Coincidencias con el patron del dia", weight=0.08),
-    ScoreComponent(key="exact_prefix_match", label="Ruta exacta del dia", weight=0.04),
-    ScoreComponent(key="overdue_gap", label="Rezago desde ultima aparicion", weight=0.04),
-    ScoreComponent(key="same_day_repeat_pattern", label="Patron de repeticion intradia", weight=0.02),
+    ScoreComponent(key="slot_recent_14d", label="Frecuencia reciente por hora (14d)", weight=0.13),
+    ScoreComponent(key="slot_historical_90d", label="Frecuencia historica por hora (90d)", weight=0.08),
+    ScoreComponent(key="slot_last4_occurrences", label="Presencia en las ultimas 4 apariciones de esa hora", weight=0.09),
+    ScoreComponent(key="weekday_slot_frequency", label="Coincidencia por dia de semana y hora", weight=0.07),
+    ScoreComponent(key="daypart_frequency", label="Frecuencia por tramo del dia", weight=0.05),
+    ScoreComponent(key="recent_frequency_7d", label="Frecuencia global reciente (7d)", weight=0.07),
+    ScoreComponent(key="recent_frequency_30d", label="Frecuencia global reciente (30d)", weight=0.05),
+    ScoreComponent(key="historical_frequency_90d", label="Frecuencia global historica (90d)", weight=0.03),
+    ScoreComponent(key="last_transition", label="Transicion desde el ultimo resultado", weight=0.09),
+    ScoreComponent(key="pair_context", label="Pareja previa coincidente", weight=0.07),
+    ScoreComponent(key="trio_context", label="Trio previo coincidente", weight=0.05),
+    ScoreComponent(key="prefix_overlap", label="Coincidencias con el patron del dia", weight=0.06),
+    ScoreComponent(key="exact_prefix_match", label="Ruta exacta del dia", weight=0.03),
+    ScoreComponent(key="cross_lottery_overlap", label="Coincidencia con el contexto de otras loterias", weight=0.06),
+    ScoreComponent(key="cross_lottery_exact", label="Contexto exacto de otras loterias", weight=0.03),
+    ScoreComponent(key="overdue_gap", label="Rezago desde ultima aparicion", weight=0.03),
+    ScoreComponent(key="same_day_repeat_pattern", label="Patron de repeticion intradia", weight=0.01),
 ]
 
 
 class AnalyticsService:
-    METHODOLOGY_VERSION = "ops-intraday-ranking-v4"
+    METHODOLOGY_VERSION = "ops-intraday-ranking-v5"
     BASELINE_METHODOLOGY_VERSION = "frequency-baseline-v1"
     MINIMUM_BACKTEST_HISTORY = 10
     FULL_TOP_N = 10
+    SLOT_CONTEXT_DEPTH = 4
+    MARKET_CONTEXT_DEPTH = 6
 
     @staticmethod
     def _coerce_datetime(value) -> datetime:
@@ -88,9 +93,16 @@ class AnalyticsService:
         return float(value) / float(maximum)
 
     @staticmethod
+    def _day_item_sort_key(item: dict) -> tuple[str, str]:
+        return item["draw_time_local"], item["canonical_lottery_name"]
+
+    @staticmethod
     def _candidate_sort_key(candidate: DrawPredictionCandidate):
         return (
             candidate.score,
+            candidate.cross_lottery_exact_hits,
+            candidate.cross_lottery_hits,
+            candidate.last4_slot_hits,
             candidate.exact_context_hits,
             candidate.trio_context_hits,
             candidate.pair_context_hits,
@@ -183,11 +195,56 @@ class AnalyticsService:
 
         return counters
 
+    def _build_recent_slot_counter(
+        self,
+        results_desc: list[dict],
+        target_draw_time: str,
+        reference_local: datetime,
+    ) -> Counter:
+        reference_utc = reference_local.astimezone(timezone.utc)
+        counter = Counter()
+        slot_hits = 0
+
+        for result in results_desc:
+            draw_dt = self._coerce_datetime(result["draw_datetime_utc"])
+            if draw_dt > reference_utc or result["draw_time_local"] != target_draw_time:
+                continue
+
+            key = (result["animal_number"], get_animal_name(result["animal_number"]))
+            counter[key] += 1
+            slot_hits += 1
+            if slot_hits >= self.SLOT_CONTEXT_DEPTH:
+                break
+
+        return counter
+
+    def _build_market_prefix(
+        self,
+        market_day_items: list[dict],
+        *,
+        target_lottery_name: str,
+        target_draw_time: str,
+    ) -> list[tuple[str, int]]:
+        prefix = []
+        for item in sorted(market_day_items, key=self._day_item_sort_key):
+            if item["canonical_lottery_name"] == target_lottery_name:
+                continue
+            if item["draw_time_local"] >= target_draw_time:
+                continue
+            prefix.append((item["canonical_lottery_name"], item["animal_number"]))
+        if len(prefix) <= self.MARKET_CONTEXT_DEPTH:
+            return prefix
+        return prefix[-self.MARKET_CONTEXT_DEPTH :]
+
     def _build_window_counters(
         self,
+        lottery_name: str,
         target_draw_time: str,
         today_results: list[dict],
         historical_days: dict[str, list[dict]],
+        results_desc: list[dict],
+        market_today_results: list[dict],
+        market_historical_days: dict[str, list[dict]],
         reference_local: datetime,
     ) -> dict[str, Counter]:
         target_weekday = reference_local.weekday()
@@ -195,6 +252,11 @@ class AnalyticsService:
         counters = {
             "slot_recent_14d": Counter(),
             "slot_historical_90d": Counter(),
+            "slot_last4": self._build_recent_slot_counter(
+                results_desc=results_desc,
+                target_draw_time=target_draw_time,
+                reference_local=reference_local,
+            ),
             "weekday_slot": Counter(),
             "last_transition": Counter(),
             "pair_context": Counter(),
@@ -202,6 +264,8 @@ class AnalyticsService:
             "prefix_overlap": Counter(),
             "exact_prefix": Counter(),
             "same_day_repeat": Counter(),
+            "cross_overlap": Counter(),
+            "cross_exact": Counter(),
         }
 
         observed_prefix_results = [item for item in today_results if item["draw_time_local"] < target_draw_time]
@@ -210,8 +274,14 @@ class AnalyticsService:
         last_one = observed_prefix[-1:] if observed_prefix else []
         last_two = observed_prefix[-2:] if len(observed_prefix) >= 2 else []
         last_three = observed_prefix[-3:] if len(observed_prefix) >= 3 else []
+        observed_market_prefix = self._build_market_prefix(
+            market_today_results,
+            target_lottery_name=lottery_name,
+            target_draw_time=target_draw_time,
+        )
+        observed_market_set = set(observed_market_prefix)
 
-        for day_items in historical_days.values():
+        for draw_date, day_items in historical_days.items():
             by_time = {item["draw_time_local"]: item for item in day_items}
             target_item = by_time.get(target_draw_time)
             if not target_item:
@@ -250,22 +320,43 @@ class AnalyticsService:
                 ):
                     counters["same_day_repeat"][target_key] += 1
 
+            if observed_market_prefix:
+                market_day_items = market_historical_days.get(draw_date, [])
+                historical_market_prefix = self._build_market_prefix(
+                    market_day_items,
+                    target_lottery_name=lottery_name,
+                    target_draw_time=target_draw_time,
+                )
+                overlap = len(observed_market_set.intersection(historical_market_prefix))
+                if overlap:
+                    counters["cross_overlap"][target_key] += overlap
+                if historical_market_prefix[-len(observed_market_prefix) :] == observed_market_prefix:
+                    counters["cross_exact"][target_key] += 1
+
         return counters
 
     def _build_draw_prediction_window(
         self,
+        lottery_name: str,
         target_draw_time: str,
         today_results: list[dict],
         historical_days: dict[str, list[dict]],
+        results_desc: list[dict],
+        market_today_results: list[dict],
+        market_historical_days: dict[str, list[dict]],
         global_counters: dict[str, Any],
         reference_local: datetime,
         top_n: int,
     ) -> DrawPredictionWindow:
         target_daypart = self._daypart_for_time(target_draw_time)
         window_counters = self._build_window_counters(
+            lottery_name=lottery_name,
             target_draw_time=target_draw_time,
             today_results=today_results,
             historical_days=historical_days,
+            results_desc=results_desc,
+            market_today_results=market_today_results,
+            market_historical_days=market_historical_days,
             reference_local=reference_local,
         )
 
@@ -275,6 +366,7 @@ class AnalyticsService:
         maxima = {
             "slot_recent_14d": max(window_counters["slot_recent_14d"].values(), default=1),
             "slot_historical_90d": max(window_counters["slot_historical_90d"].values(), default=1),
+            "slot_last4_occurrences": max(window_counters["slot_last4"].values(), default=1),
             "weekday_slot_frequency": max(window_counters["weekday_slot"].values(), default=1),
             "daypart_frequency": max(global_counters["daypart"].values(), default=1),
             "recent_frequency_7d": max(global_counters["recent_7d"].values(), default=1),
@@ -285,6 +377,8 @@ class AnalyticsService:
             "trio_context": max(window_counters["trio_context"].values(), default=1),
             "prefix_overlap": max(window_counters["prefix_overlap"].values(), default=1),
             "exact_prefix_match": max(window_counters["exact_prefix"].values(), default=1),
+            "cross_lottery_overlap": max(window_counters["cross_overlap"].values(), default=1),
+            "cross_lottery_exact": max(window_counters["cross_exact"].values(), default=1),
             "overdue_gap": max(global_counters["last_seen_draws"].values(), default=1) or 1,
             "same_day_repeat_pattern": max(window_counters["same_day_repeat"].values(), default=1),
         }
@@ -295,75 +389,93 @@ class AnalyticsService:
             score_breakdown = {
                 "slot_recent_14d": round(
                     self._normalize(window_counters["slot_recent_14d"].get(key, 0), maxima["slot_recent_14d"])
-                    * 0.16
+                    * 0.13
                     * 100,
                     2,
                 ),
                 "slot_historical_90d": round(
                     self._normalize(window_counters["slot_historical_90d"].get(key, 0), maxima["slot_historical_90d"])
-                    * 0.10
+                    * 0.08
+                    * 100,
+                    2,
+                ),
+                "slot_last4_occurrences": round(
+                    self._normalize(window_counters["slot_last4"].get(key, 0), maxima["slot_last4_occurrences"])
+                    * 0.09
                     * 100,
                     2,
                 ),
                 "weekday_slot_frequency": round(
                     self._normalize(window_counters["weekday_slot"].get(key, 0), maxima["weekday_slot_frequency"])
-                    * 0.08
+                    * 0.07
                     * 100,
                     2,
                 ),
                 "daypart_frequency": round(
-                    self._normalize(global_counters["daypart"].get(key, 0), maxima["daypart_frequency"]) * 0.06 * 100,
+                    self._normalize(global_counters["daypart"].get(key, 0), maxima["daypart_frequency"]) * 0.05 * 100,
                     2,
                 ),
                 "recent_frequency_7d": round(
-                    self._normalize(global_counters["recent_7d"].get(key, 0), maxima["recent_frequency_7d"]) * 0.08 * 100,
+                    self._normalize(global_counters["recent_7d"].get(key, 0), maxima["recent_frequency_7d"]) * 0.07 * 100,
                     2,
                 ),
                 "recent_frequency_30d": round(
                     self._normalize(global_counters["recent_30d"].get(key, 0), maxima["recent_frequency_30d"])
-                    * 0.06
+                    * 0.05
                     * 100,
                     2,
                 ),
                 "historical_frequency_90d": round(
                     self._normalize(global_counters["historical_90d"].get(key, 0), maxima["historical_frequency_90d"])
-                    * 0.04
+                    * 0.03
                     * 100,
                     2,
                 ),
                 "last_transition": round(
                     self._normalize(window_counters["last_transition"].get(key, 0), maxima["last_transition"])
-                    * 0.10
+                    * 0.09
                     * 100,
                     2,
                 ),
                 "pair_context": round(
-                    self._normalize(window_counters["pair_context"].get(key, 0), maxima["pair_context"]) * 0.08 * 100,
+                    self._normalize(window_counters["pair_context"].get(key, 0), maxima["pair_context"]) * 0.07 * 100,
                     2,
                 ),
                 "trio_context": round(
-                    self._normalize(window_counters["trio_context"].get(key, 0), maxima["trio_context"]) * 0.06 * 100,
+                    self._normalize(window_counters["trio_context"].get(key, 0), maxima["trio_context"]) * 0.05 * 100,
                     2,
                 ),
                 "prefix_overlap": round(
                     self._normalize(window_counters["prefix_overlap"].get(key, 0), maxima["prefix_overlap"])
-                    * 0.08
+                    * 0.06
                     * 100,
                     2,
                 ),
                 "exact_prefix_match": round(
                     self._normalize(window_counters["exact_prefix"].get(key, 0), maxima["exact_prefix_match"])
-                    * 0.04
+                    * 0.03
+                    * 100,
+                    2,
+                ),
+                "cross_lottery_overlap": round(
+                    self._normalize(window_counters["cross_overlap"].get(key, 0), maxima["cross_lottery_overlap"])
+                    * 0.06
+                    * 100,
+                    2,
+                ),
+                "cross_lottery_exact": round(
+                    self._normalize(window_counters["cross_exact"].get(key, 0), maxima["cross_lottery_exact"])
+                    * 0.03
                     * 100,
                     2,
                 ),
                 "overdue_gap": round(
-                    self._normalize(global_counters["last_seen_draws"].get(key, 0), maxima["overdue_gap"]) * 0.04 * 100,
+                    self._normalize(global_counters["last_seen_draws"].get(key, 0), maxima["overdue_gap"]) * 0.03 * 100,
                     2,
                 ),
                 "same_day_repeat_pattern": round(
                     self._normalize(window_counters["same_day_repeat"].get(key, 0), maxima["same_day_repeat_pattern"])
-                    * 0.02
+                    * 0.01
                     * 100,
                     2,
                 ),
@@ -375,6 +487,7 @@ class AnalyticsService:
                     score=round(sum(score_breakdown.values()), 2),
                     slot_hits=window_counters["slot_historical_90d"].get(key, 0),
                     recent_slot_hits=window_counters["slot_recent_14d"].get(key, 0),
+                    last4_slot_hits=window_counters["slot_last4"].get(key, 0),
                     transition_hits=window_counters["last_transition"].get(key, 0),
                     coincidence_hits=window_counters["prefix_overlap"].get(key, 0),
                     overall_hits=global_counters["historical_90d"].get(key, 0),
@@ -386,6 +499,8 @@ class AnalyticsService:
                     trio_context_hits=window_counters["trio_context"].get(key, 0),
                     exact_context_hits=window_counters["exact_prefix"].get(key, 0),
                     same_day_repeat_hits=window_counters["same_day_repeat"].get(key, 0),
+                    cross_lottery_hits=window_counters["cross_overlap"].get(key, 0),
+                    cross_lottery_exact_hits=window_counters["cross_exact"].get(key, 0),
                     score_breakdown=score_breakdown,
                 )
             )
@@ -413,6 +528,7 @@ class AnalyticsService:
             overall_hits=candidate.overall_hits,
             recent_hits=candidate.recent_hits,
             remaining_time_hits=candidate.slot_hits,
+            last4_slot_hits=candidate.last4_slot_hits,
             draws_since_last_seen=candidate.draws_since_last_seen,
             seen_today=seen_today,
             weekday_slot_hits=candidate.weekday_slot_hits,
@@ -421,6 +537,8 @@ class AnalyticsService:
             trio_context_hits=candidate.trio_context_hits,
             exact_context_hits=candidate.exact_context_hits,
             same_day_repeat_hits=candidate.same_day_repeat_hits,
+            cross_lottery_hits=candidate.cross_lottery_hits,
+            cross_lottery_exact_hits=candidate.cross_lottery_exact_hits,
             score_breakdown=dict(candidate.score_breakdown),
             rank_delta=candidate.rank_delta,
         )
@@ -511,18 +629,29 @@ class AnalyticsService:
         schedule: dict,
         reference_local: datetime,
         top_n: int,
+        market_results: list[dict] | None = None,
     ) -> LotteryPossibleResults | None:
         if not results:
             return None
 
+        market_results = market_results or results
         sorted_desc = self._sort_results(results, reverse=True)
         sorted_asc = list(reversed(sorted_desc))
+        market_sorted_asc = self._sort_results(market_results)
         reference_date_str = reference_local.date().isoformat()
         target_draw_times = self._get_target_draw_times(schedule, reference_local)
         today_results = [item for item in sorted_asc if self._coerce_date_string(item["draw_date"]) == reference_date_str]
+        market_today_results = [
+            item for item in market_sorted_asc if self._coerce_date_string(item["draw_date"]) == reference_date_str
+        ]
         historical_days = {
             draw_date: items
             for draw_date, items in self._group_results_by_day(results).items()
+            if draw_date != reference_date_str
+        }
+        market_historical_days = {
+            draw_date: items
+            for draw_date, items in self._group_results_by_day(market_results).items()
             if draw_date != reference_date_str
         }
         date_span = {self._coerce_date_string(result["draw_date"]) for result in results}
@@ -536,9 +665,13 @@ class AnalyticsService:
             )
             draw_predictions.append(
                 self._build_draw_prediction_window(
+                    lottery_name=lottery_name,
                     target_draw_time=target_draw_time,
                     today_results=today_results,
                     historical_days=historical_days,
+                    results_desc=sorted_desc,
+                    market_today_results=market_today_results,
+                    market_historical_days=market_historical_days,
                     global_counters=global_counters,
                     reference_local=reference_local,
                     top_n=top_n,
@@ -781,12 +914,21 @@ class AnalyticsService:
         reference_local = reference_local or local_now()
         schedules = {item["canonical_lottery_name"]: item for item in db_service.get_schedules()}
         selected_lotteries = self._normalize_lotteries(lotteries)
+        results_by_lottery = {
+            lottery_name: db_service.get_results(canonical_lottery_name=lottery_name, limit=None)
+            for lottery_name in selected_lotteries
+        }
+        market_results = [
+            result
+            for lottery_name in selected_lotteries
+            for result in results_by_lottery.get(lottery_name, [])
+        ]
         summary_items = []
         unique_dates = set()
         total_history_results = 0
 
         for lottery_name in selected_lotteries:
-            results = db_service.get_results(canonical_lottery_name=lottery_name, limit=None)
+            results = results_by_lottery.get(lottery_name, [])
             schedule = schedules.get(lottery_name, {"times": []})
             lottery_summary = self._build_candidates_for_reference(
                 lottery_name=lottery_name,
@@ -794,6 +936,7 @@ class AnalyticsService:
                 schedule=schedule,
                 reference_local=reference_local,
                 top_n=full_top_n,
+                market_results=market_results,
             )
             if lottery_summary:
                 lottery_summary.candidates = lottery_summary.candidates[:requested_top_n]
@@ -809,9 +952,9 @@ class AnalyticsService:
             methodology_version=self.METHODOLOGY_VERSION,
             methodology=(
                 "Ranking intradia por loteria, hora, dia de semana y tramo del dia. "
-                "Combina ventanas historicas de 7, 14, 30 y 90 dias con transiciones entre sorteos, "
-                "contexto de parejas y trios previos, coincidencias del patron observado hoy, "
-                "patrones de repeticion intradia y rezago desde la ultima aparicion."
+                "Combina ventanas historicas de 7, 14, 30 y 90 dias con recurrencia de la misma hora, "
+                "transiciones entre sorteos, contexto de parejas y trios previos, coincidencias del patron observado hoy, "
+                "contexto cruzado de otras loterias, patrones de repeticion intradia y rezago desde la ultima aparicion."
             ),
             disclaimer="Proyeccion estadistica operativa. No garantiza aciertos ni reemplaza criterio propio.",
             baseline_methodology_version=self.BASELINE_METHODOLOGY_VERSION,
@@ -841,6 +984,18 @@ class AnalyticsService:
         now_local = local_now()
         start_date = (now_local.date() - timedelta(days=days - 1)).isoformat()
         end_date = now_local.date().isoformat()
+        results_by_lottery = {
+            lottery_name: db_service.get_results(
+                canonical_lottery_name=lottery_name,
+                start_date=start_date,
+                end_date=end_date,
+                limit=None,
+            )
+            for lottery_name in selected_lotteries
+        }
+        market_ordered = self._sort_results(
+            [item for lottery_name in selected_lotteries for item in results_by_lottery.get(lottery_name, [])]
+        )
 
         lottery_stats = defaultdict(
             lambda: {
@@ -866,12 +1021,7 @@ class AnalyticsService:
         )
 
         for lottery_name in selected_lotteries:
-            items = db_service.get_results(
-                canonical_lottery_name=lottery_name,
-                start_date=start_date,
-                end_date=end_date,
-                limit=None,
-            )
+            items = results_by_lottery.get(lottery_name, [])
             ordered = self._sort_results(items)
             schedule = schedules.get(lottery_name, {"times": []})
 
@@ -888,12 +1038,17 @@ class AnalyticsService:
                     parse_time_local(actual["draw_time_local"]),
                     tzinfo=local_now().tzinfo,
                 )
+                actual_dt = self._coerce_datetime(actual["draw_datetime_utc"])
+                market_history = [
+                    item for item in market_ordered if self._coerce_datetime(item["draw_datetime_utc"]) < actual_dt
+                ]
                 candidate_summary = self._build_candidates_for_reference(
                     lottery_name=lottery_name,
                     results=history,
                     schedule=schedule,
                     reference_local=reference_local,
                     top_n=max(top_n, self.FULL_TOP_N),
+                    market_results=market_history,
                 )
                 if not candidate_summary:
                     continue

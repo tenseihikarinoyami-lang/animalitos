@@ -189,6 +189,41 @@ def test_backtesting_summary_exposes_baseline_metrics():
     assert isinstance(summary.beats_baseline, bool)
 
 
+def test_possible_results_summary_uses_cross_lottery_and_recent_slot_context():
+    today = local_now().date()
+    seed = [
+        _sample_result(today, "08:00", 4, "La Granjita"),
+        _sample_result(today, "08:00", 7, "Lotto Activo"),
+        _sample_result(today - timedelta(days=1), "08:00", 4, "La Granjita"),
+        _sample_result(today - timedelta(days=1), "08:00", 10, "Lotto Activo"),
+        _sample_result(today - timedelta(days=1), "09:00", 21, "Lotto Activo"),
+        _sample_result(today - timedelta(days=2), "08:00", 4, "La Granjita"),
+        _sample_result(today - timedelta(days=2), "08:00", 11, "Lotto Activo"),
+        _sample_result(today - timedelta(days=2), "09:00", 21, "Lotto Activo"),
+        _sample_result(today - timedelta(days=3), "08:00", 4, "La Granjita"),
+        _sample_result(today - timedelta(days=3), "08:00", 12, "Lotto Activo"),
+        _sample_result(today - timedelta(days=3), "09:00", 21, "Lotto Activo"),
+        _sample_result(today - timedelta(days=4), "09:00", 21, "Lotto Activo"),
+    ]
+    db_service.upsert_results(seed)
+
+    reference_local = local_now().replace(hour=8, minute=30, second=0, microsecond=0)
+    summary = analytics_service.build_possible_results_summary(
+        top_n=5,
+        lotteries=["Lotto Activo", "La Granjita"],
+        reference_local=reference_local,
+    )
+    lotto_activo = next(item for item in summary.lotteries if item.canonical_lottery_name == "Lotto Activo")
+    next_window = next(window for window in lotto_activo.draw_predictions if window.draw_time_local == "09:00")
+    candidate_21 = next(item for item in next_window.candidates if item.animal_number == 21)
+
+    assert summary.methodology_version == analytics_service.METHODOLOGY_VERSION
+    assert "cross_lottery_overlap" in candidate_21.score_breakdown
+    assert "slot_last4_occurrences" in candidate_21.score_breakdown
+    assert candidate_21.cross_lottery_hits > 0
+    assert candidate_21.last4_slot_hits > 0
+
+
 @pytest.mark.asyncio
 async def test_pre_draw_alerts_send_once(monkeypatch):
     today = local_now().date()

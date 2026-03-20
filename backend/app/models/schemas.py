@@ -141,6 +141,7 @@ class PossibleResultCandidate(BaseModel):
     overall_hits: int
     recent_hits: int
     remaining_time_hits: int
+    last4_slot_hits: int = 0
     draws_since_last_seen: int
     seen_today: bool = False
     weekday_slot_hits: int = 0
@@ -149,6 +150,8 @@ class PossibleResultCandidate(BaseModel):
     trio_context_hits: int = 0
     exact_context_hits: int = 0
     same_day_repeat_hits: int = 0
+    cross_lottery_hits: int = 0
+    cross_lottery_exact_hits: int = 0
     score_breakdown: dict[str, float] = Field(default_factory=dict)
     rank_delta: int | None = None
 
@@ -159,6 +162,7 @@ class DrawPredictionCandidate(BaseModel):
     score: float
     slot_hits: int
     recent_slot_hits: int
+    last4_slot_hits: int = 0
     transition_hits: int
     coincidence_hits: int
     overall_hits: int
@@ -170,6 +174,8 @@ class DrawPredictionCandidate(BaseModel):
     trio_context_hits: int = 0
     exact_context_hits: int = 0
     same_day_repeat_hits: int = 0
+    cross_lottery_hits: int = 0
+    cross_lottery_exact_hits: int = 0
     score_breakdown: dict[str, float] = Field(default_factory=dict)
     rank_delta: int | None = None
 

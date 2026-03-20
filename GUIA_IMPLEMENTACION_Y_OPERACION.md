@@ -14,7 +14,7 @@ Capacidades activas:
 - Scheduler para ventanas de sorteo, resumen diario, resumen estadistico matutino y backfill semanal.
 - Calidad diaria por loteria.
 - Resumen estadistico versionado con backtesting y prediccion intradia por sorteo pendiente.
-- Ranking intradia v4 con coincidencias, parejas, trios, dia de semana, tramo del dia y comparacion contra baseline simple.
+- Ranking intradia v5 con contexto cruzado entre loterias, recurrencia reciente por hora, coincidencias, parejas, trios, dia de semana, tramo del dia y comparacion contra baseline simple.
 - Alertas previas al siguiente sorteo para Telegram cuando el scheduler entra en ventana.
 - Deteccion de cambios de ranking entre corridas consecutivas.
 - Auditoria admin.
@@ -38,11 +38,17 @@ Capacidades activas:
   - coincidencias del patron del dia
   - frecuencia historica por hora
   - frecuencia reciente por hora
+  - presencia en las ultimas 4 apariciones de la misma hora
   - dia de la semana y tramo del dia
   - transicion desde el ultimo resultado observado
   - parejas y trios previos
+  - contexto cruzado de otras loterias del mismo dia
   - repeticion intradia
   - rezago de aparicion
+- Extraccion en tiempo real reforzada con:
+  - fusion de resultados entre URL diaria y URL historica del mismo dia
+  - reintentos cortos con cache-busting si por hora faltan resultados esperados
+  - diagnostico por intento en `source_reports`
 - Comparacion contra baseline simple de frecuencia en el backtesting.
 - Guardado de `top 3`, `top 5` y `top 10` por loteria y por ventana pendiente.
 - Deteccion de `rank_delta` y cambios de lider entre corridas.
@@ -175,7 +181,7 @@ Guias detalladas:
 - Firestore real: OK.
 - Telegram real: OK.
 - Envio de mensaje de prueba: OK.
-- Ranking intradia v4: OK.
+- Ranking intradia v5: OK.
 - Backtesting con baseline: OK.
 - Alerta previa al sorteo en pruebas: OK.
 - Scheduler en cola rapida y heartbeat: OK.

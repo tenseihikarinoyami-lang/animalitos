@@ -1,18 +1,21 @@
+import asyncio
 import hashlib
 import re
 from datetime import date
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin
 
 import httpx
 from bs4 import BeautifulSoup
 
-from app.core.lottery_catalog import canonicalize_lottery_name
-from app.services.schedule import combine_local_datetime, date_to_local_string, local_now, utc_now
+from app.core.lottery_catalog import DEFAULT_DRAW_SCHEDULES, canonicalize_lottery_name
+from app.services.schedule import combine_local_datetime, date_to_local_string, expected_draws_by_now, local_now, utc_now
 
 
 class LotteryScraperService:
     BASE_URL = "https://loteriadehoy.com"
-    PARSER_VERSION = "2026.03.18.2"
+    PARSER_VERSION = "2026.03.20.1"
+    LIVE_RETRY_ATTEMPTS = 2
+    LIVE_RETRY_DELAY_SECONDS = 1.2
 
     def __init__(self) -> None:
         self.headers = {
@@ -29,56 +32,120 @@ class LotteryScraperService:
         return await self.fetch_results_for_date(today, include_today_urls=True)
 
     async def fetch_results_for_date(self, target_date: date, include_today_urls: bool = False) -> dict:
-        source_urls = []
-        errors = []
-        results = []
-        source_reports = []
+        source_urls: list[str] = []
+        errors: list[str] = []
+        results_by_key: dict[str, dict] = {}
+        source_reports: list[dict] = []
+        pending_pages = ["animalitos", "internacional"]
+        attempt = 0
 
         async with httpx.AsyncClient(headers=self.headers, follow_redirects=True, timeout=30.0) as client:
-            for source_page in ["animalitos", "internacional"]:
-                urls = self._build_candidate_urls(source_page, target_date, include_today_urls)
-                for url in urls:
-                    source_urls.append(url)
-                    try:
-                        response = await client.get(url)
-                        response.raise_for_status()
-                        html_signature = hashlib.sha256(response.text.encode("utf-8")).hexdigest()[:16]
-                        parsed = self.parse_results_html(
-                            html_content=response.text,
-                            target_date=target_date,
-                            source_page=source_page,
-                            source_url=url,
-                        )
-                        source_reports.append(
-                            {
-                                "draw_date": target_date.isoformat(),
-                                "source_page": source_page,
-                                "url": url,
-                                "status": "success" if parsed else "empty",
-                                "http_status": response.status_code,
-                                "results_found": len(parsed),
-                                "html_signature": html_signature,
-                                "parser_version": self.PARSER_VERSION,
-                            }
-                        )
-                        if parsed:
-                            results.extend(parsed)
-                            break
-                    except Exception as exc:
-                        errors.append(f"{source_page}: {url} -> {exc}")
-                        source_reports.append(
-                            {
-                                "draw_date": target_date.isoformat(),
-                                "source_page": source_page,
-                                "url": url,
-                                "status": "error",
-                                "http_status": None,
-                                "results_found": 0,
-                                "html_signature": None,
-                                "parser_version": self.PARSER_VERSION,
-                                "error": str(exc),
-                            }
-                        )
+            while pending_pages:
+                attempt += 1
+                cache_bust_token = None
+                if attempt > 1:
+                    cache_bust_token = f"{int(utc_now().timestamp())}-{attempt}"
+
+                current_pages = list(pending_pages)
+                pending_pages = []
+                for source_page in current_pages:
+                    fetched = await self._fetch_source_page(
+                        client=client,
+                        source_page=source_page,
+                        target_date=target_date,
+                        include_today_urls=include_today_urls,
+                        attempt=attempt,
+                        cache_bust_token=cache_bust_token,
+                    )
+                    source_urls.extend(fetched["source_urls"])
+                    errors.extend(fetched["errors"])
+                    source_reports.extend(fetched["source_reports"])
+                    for result in fetched["results"]:
+                        results_by_key[result["dedupe_key"]] = result
+
+                if not self._should_retry_live_results(
+                    target_date=target_date,
+                    found_results=list(results_by_key.values()),
+                    attempt=attempt,
+                ):
+                    break
+
+                pending_pages = self._pages_missing_by_now(target_date=target_date, found_results=list(results_by_key.values()))
+                if pending_pages:
+                    await asyncio.sleep(self.LIVE_RETRY_DELAY_SECONDS)
+
+        return {
+            "results": list(results_by_key.values()),
+            "errors": errors,
+            "source_urls": sorted(set(source_urls)),
+            "source_reports": source_reports,
+            "parser_version": self.PARSER_VERSION,
+        }
+
+    async def _fetch_source_page(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        source_page: str,
+        target_date: date,
+        include_today_urls: bool,
+        attempt: int,
+        cache_bust_token: str | None,
+    ) -> dict:
+        results = []
+        errors = []
+        source_urls = []
+        source_reports = []
+
+        for url in self._build_candidate_urls(
+            source_page=source_page,
+            target_date=target_date,
+            include_today_urls=include_today_urls,
+            cache_bust_token=cache_bust_token,
+        ):
+            source_urls.append(url)
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+                html_signature = hashlib.sha256(response.text.encode("utf-8")).hexdigest()[:16]
+                parsed = self.parse_results_html(
+                    html_content=response.text,
+                    target_date=target_date,
+                    source_page=source_page,
+                    source_url=url,
+                )
+                results.extend(parsed)
+                source_reports.append(
+                    {
+                        "draw_date": target_date.isoformat(),
+                        "source_page": source_page,
+                        "url": url,
+                        "status": "success" if parsed else "empty",
+                        "http_status": response.status_code,
+                        "results_found": len(parsed),
+                        "html_signature": html_signature,
+                        "parser_version": self.PARSER_VERSION,
+                        "attempt": attempt,
+                        "cache_bust": bool(cache_bust_token),
+                    }
+                )
+            except Exception as exc:
+                errors.append(f"{source_page}: {url} -> {exc}")
+                source_reports.append(
+                    {
+                        "draw_date": target_date.isoformat(),
+                        "source_page": source_page,
+                        "url": url,
+                        "status": "error",
+                        "http_status": None,
+                        "results_found": 0,
+                        "html_signature": None,
+                        "parser_version": self.PARSER_VERSION,
+                        "attempt": attempt,
+                        "cache_bust": bool(cache_bust_token),
+                        "error": str(exc),
+                    }
+                )
 
         deduped = {item["dedupe_key"]: item for item in results}
         return {
@@ -86,8 +153,44 @@ class LotteryScraperService:
             "errors": errors,
             "source_urls": source_urls,
             "source_reports": source_reports,
-            "parser_version": self.PARSER_VERSION,
         }
+
+    def _expected_results_by_page(self, target_date: date) -> dict[str, int]:
+        if target_date != local_now().date():
+            return {}
+
+        counts: dict[str, int] = {}
+        reference_local = local_now()
+        for schedule in DEFAULT_DRAW_SCHEDULES:
+            expected_count = expected_draws_by_now(schedule, reference_local)
+            for source_page in schedule.get("source_pages", []):
+                counts[source_page] = counts.get(source_page, 0) + expected_count
+        return counts
+
+    def _pages_missing_by_now(self, target_date: date, found_results: list[dict]) -> list[str]:
+        expected_by_page = self._expected_results_by_page(target_date)
+        if not expected_by_page:
+            return []
+
+        found_by_page: dict[str, set[str]] = {}
+        for result in found_results:
+            source_page = result.get("source_page")
+            if not source_page:
+                continue
+            found_by_page.setdefault(source_page, set()).add(result["dedupe_key"])
+
+        missing_pages = []
+        for source_page, expected_count in expected_by_page.items():
+            if len(found_by_page.get(source_page, set())) < expected_count:
+                missing_pages.append(source_page)
+        return missing_pages
+
+    def _should_retry_live_results(self, target_date: date, found_results: list[dict], attempt: int) -> bool:
+        if target_date != local_now().date():
+            return False
+        if attempt >= self.LIVE_RETRY_ATTEMPTS:
+            return False
+        return bool(self._pages_missing_by_now(target_date=target_date, found_results=found_results))
 
     def parse_results_html(
         self,
@@ -210,12 +313,21 @@ class LotteryScraperService:
             hour = 0
         return f"{hour:02d}:{minute:02d}"
 
-    def _build_candidate_urls(self, source_page: str, target_date: date, include_today_urls: bool) -> list[str]:
+    def _build_candidate_urls(
+        self,
+        source_page: str,
+        target_date: date,
+        include_today_urls: bool,
+        cache_bust_token: str | None = None,
+    ) -> list[str]:
         dated_path = f"/{source_page}/resultados/{date_to_local_string(target_date)}/"
         urls = []
         if include_today_urls:
             urls.append(urljoin(self.BASE_URL, f"/{source_page}/resultados/"))
         urls.append(urljoin(self.BASE_URL, dated_path))
+        if cache_bust_token:
+            query = urlencode({"_rt": cache_bust_token})
+            urls = [f"{url}{'&' if '?' in url else '?'}{query}" for url in urls]
         return urls
 
     def _build_dedupe_key(
