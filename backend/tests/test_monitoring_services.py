@@ -41,6 +41,22 @@ def test_upsert_results_deduplicates_by_dedupe_key():
     assert second_insert["duplicate_count"] == 1
 
 
+def test_prepare_for_storage_converts_nested_datetimes_to_strings():
+    stamp = datetime(2026, 3, 19, 12, 30, tzinfo=timezone.utc)
+
+    prepared = db_service._prepare_for_storage(
+        {
+            "updated_at": stamp,
+            "nested": [stamp, {"date": stamp.date(), "ts": stamp}],
+        }
+    )
+
+    assert prepared["updated_at"] == stamp.isoformat()
+    assert prepared["nested"][0] == stamp.isoformat()
+    assert prepared["nested"][1]["date"] == stamp.date().isoformat()
+    assert prepared["nested"][1]["ts"] == stamp.isoformat()
+
+
 def test_explicit_postgres_failure_does_not_fallback_to_mock(monkeypatch):
     class BrokenEngine:
         def begin(self):

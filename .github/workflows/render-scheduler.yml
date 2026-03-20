@@ -32,7 +32,7 @@ jobs:
         env:
           BACKEND_URL: ${{ secrets.ANIMALITOS_BACKEND_URL }}
         run: |
-          curl --fail --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 30 \
+          curl --fail-with-body --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 30 \
             "${BACKEND_URL}/health" > /dev/null
 
       - name: Queue refresh
@@ -40,7 +40,7 @@ jobs:
           BACKEND_URL: ${{ secrets.ANIMALITOS_BACKEND_URL }}
           SCHEDULER_TOKEN: ${{ secrets.ANIMALITOS_SCHEDULER_TOKEN }}
         run: |
-          curl --fail --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 60 \
+          curl --fail-with-body --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 60 \
             -X POST \
             -H "X-Scheduler-Token: ${SCHEDULER_TOKEN}" \
             "${BACKEND_URL}/api/internal/scheduler/refresh"
@@ -55,7 +55,7 @@ jobs:
           BACKEND_URL: ${{ secrets.ANIMALITOS_BACKEND_URL }}
           SCHEDULER_TOKEN: ${{ secrets.ANIMALITOS_SCHEDULER_TOKEN }}
         run: |
-          curl --fail --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 60 \
+          curl --fail-with-body --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 60 \
             -X POST \
             -H "X-Scheduler-Token: ${SCHEDULER_TOKEN}" \
             "${BACKEND_URL}/api/internal/scheduler/possible-results"
@@ -70,7 +70,7 @@ jobs:
           BACKEND_URL: ${{ secrets.ANIMALITOS_BACKEND_URL }}
           SCHEDULER_TOKEN: ${{ secrets.ANIMALITOS_SCHEDULER_TOKEN }}
         run: |
-          curl --fail --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 60 \
+          curl --fail-with-body --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 60 \
             -X POST \
             -H "X-Scheduler-Token: ${SCHEDULER_TOKEN}" \
             "${BACKEND_URL}/api/internal/scheduler/daily-summary"
@@ -85,7 +85,7 @@ jobs:
           BACKEND_URL: ${{ secrets.ANIMALITOS_BACKEND_URL }}
           SCHEDULER_TOKEN: ${{ secrets.ANIMALITOS_SCHEDULER_TOKEN }}
         run: |
-          curl --fail --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 90 \
+          curl --fail-with-body --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 90 \
             -X POST \
             -H "X-Scheduler-Token: ${SCHEDULER_TOKEN}" \
             "${BACKEND_URL}/api/internal/scheduler/weekly-backfill"

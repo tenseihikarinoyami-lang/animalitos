@@ -82,6 +82,8 @@ class DatabaseService:
             return {key: self._prepare_for_storage(item) for key, item in value.items()}
         if isinstance(value, list):
             return [self._prepare_for_storage(item) for item in value]
+        if isinstance(value, datetime):
+            return value.isoformat()
         if isinstance(value, date) and not isinstance(value, datetime):
             return value.isoformat()
         return value
