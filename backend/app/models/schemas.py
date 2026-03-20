@@ -123,6 +123,15 @@ class ScoreComponent(BaseModel):
     weight: float
 
 
+class CandidateSignal(BaseModel):
+    key: str
+    label: str
+    contribution: float
+    weight: float
+    raw_value: float | None = None
+    intensity: str | None = None
+
+
 class AnalyticsTrends(BaseModel):
     generated_at: datetime
     days: int
@@ -153,7 +162,11 @@ class PossibleResultCandidate(BaseModel):
     cross_lottery_hits: int = 0
     cross_lottery_exact_hits: int = 0
     score_breakdown: dict[str, float] = Field(default_factory=dict)
+    strongest_signals: list[CandidateSignal] = Field(default_factory=list)
     rank_delta: int | None = None
+    previous_rank: int | None = None
+    score_delta: float | None = None
+    movement_summary: str | None = None
 
 
 class DrawPredictionCandidate(BaseModel):
@@ -177,7 +190,11 @@ class DrawPredictionCandidate(BaseModel):
     cross_lottery_hits: int = 0
     cross_lottery_exact_hits: int = 0
     score_breakdown: dict[str, float] = Field(default_factory=dict)
+    strongest_signals: list[CandidateSignal] = Field(default_factory=list)
     rank_delta: int | None = None
+    previous_rank: int | None = None
+    score_delta: float | None = None
+    movement_summary: str | None = None
 
 
 class DrawPredictionWindow(BaseModel):
@@ -304,6 +321,15 @@ class BacktestingLotteryMetric(BaseModel):
     beats_baseline: bool = False
 
 
+class CalibrationAdjustment(BaseModel):
+    key: str
+    label: str
+    previous_weight: float
+    current_weight: float
+    delta: float
+    rationale: str
+
+
 class BacktestingSummary(BaseModel):
     generated_at: datetime
     days: int
@@ -319,6 +345,13 @@ class BacktestingSummary(BaseModel):
     beats_baseline: bool = False
     by_lottery: list[BacktestingLotteryMetric]
     by_hour: list[BacktestingHourMetric]
+    calibration_summary: str | None = None
+    calibration_notes: list[str] = Field(default_factory=list)
+    weight_adjustments: list[CalibrationAdjustment] = Field(default_factory=list)
+    strongest_lotteries: list[BacktestingLotteryMetric] = Field(default_factory=list)
+    weakest_lotteries: list[BacktestingLotteryMetric] = Field(default_factory=list)
+    strongest_hours: list[BacktestingHourMetric] = Field(default_factory=list)
+    weakest_hours: list[BacktestingHourMetric] = Field(default_factory=list)
 
 
 class QualityLotteryRecord(BaseModel):

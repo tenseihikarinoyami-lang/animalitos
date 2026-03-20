@@ -154,13 +154,43 @@
                       />
                       <span>{{ candidate.animal_number.toString().padStart(2, '0') }} {{ candidate.animal_name }}</span>
                     </strong>
-                    <p>
-                      score {{ candidate.score.toFixed(2) }} | coincid {{ candidate.coincidence_hits }} |
-                      trans {{ candidate.transition_hits }} | pareja {{ candidate.pair_context_hits }} |
-                      trio {{ candidate.trio_context_hits }} | delta {{ formatDelta(candidate.rank_delta) }}
+                    <p class="candidate-movement" :class="movementTone(candidate.rank_delta, candidate.score_delta)">
+                      {{ candidate.movement_summary || `Movimiento ${formatDelta(candidate.rank_delta)} | score ${formatScoreDelta(candidate.score_delta)}` }}
                     </p>
+                    <p>
+                      coincid {{ candidate.coincidence_hits }} | trans {{ candidate.transition_hits }} |
+                      pareja {{ candidate.pair_context_hits }} | trio {{ candidate.trio_context_hits }} |
+                      overdue {{ candidate.draws_since_last_seen }}
+                    </p>
+                    <div class="signal-chip-row">
+                      <span
+                        v-for="signal in candidate.strongest_signals.slice(0, 3)"
+                        :key="`${candidate.animal_number}-${signal.key}`"
+                        class="signal-chip"
+                        :class="signalTone(signal)"
+                      >
+                        {{ signal.label }} {{ signal.contribution.toFixed(1) }}
+                      </span>
+                    </div>
+                    <details class="candidate-details">
+                      <summary>Ver explicacion</summary>
+                      <p>{{ signalSummary(candidate, 4) }}</p>
+                      <div class="breakdown-grid">
+                        <span v-for="signal in candidate.strongest_signals" :key="signal.key">
+                          {{ signal.label }}: {{ signal.contribution.toFixed(1) }}
+                          <template v-if="signal.raw_value !== null && signal.raw_value !== undefined">
+                            | dato {{ signal.raw_value }}
+                          </template>
+                        </span>
+                      </div>
+                    </details>
                   </div>
-                  <span class="score-chip">{{ candidate.slot_hits }}</span>
+                  <div class="candidate-side">
+                    <span class="score-chip">{{ candidate.score.toFixed(2) }}</span>
+                    <span class="movement-pill" :class="movementTone(candidate.rank_delta, candidate.score_delta)">
+                      Δ {{ formatDelta(candidate.rank_delta) }} | {{ formatScoreDelta(candidate.score_delta) }}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -184,9 +214,13 @@ import { useLotteryStore } from '@/stores/lottery'
 import {
   animalIconUrl,
   countdownLabel,
+  formatSignedNumber,
   handleIconError,
   lotteryIconUrl,
+  movementTone,
   PRIMARY_LOTTERIES,
+  signalSummary,
+  signalTone,
 } from '@/utils/monitoring'
 
 const AUTO_REFRESH_MS = 120000
@@ -221,8 +255,11 @@ function countdownText(value) {
 }
 
 function formatDelta(value) {
-  if (value === null || value === undefined || value === 0) return '0'
-  return value > 0 ? `+${value}` : `${value}`
+  return formatSignedNumber(value, 0)
+}
+
+function formatScoreDelta(value) {
+  return formatSignedNumber(value, 2)
 }
 
 onMounted(async () => {
@@ -356,6 +393,88 @@ onUnmounted(() => {
   height: 30px;
   padding: 0.15rem;
   border-radius: 10px;
+}
+
+.candidate-side {
+  display: grid;
+  gap: 0.45rem;
+  justify-items: end;
+}
+
+.candidate-movement {
+  margin-top: 0.35rem;
+}
+
+.candidate-movement.up,
+.movement-pill.up {
+  color: #86efac;
+}
+
+.candidate-movement.down,
+.movement-pill.down {
+  color: #fca5a5;
+}
+
+.candidate-movement.flat,
+.movement-pill.flat {
+  color: #c8dcff;
+}
+
+.signal-chip-row,
+.breakdown-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.6rem;
+}
+
+.signal-chip,
+.movement-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.28rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  border: 1px solid rgba(119, 177, 232, 0.12);
+  background: rgba(88, 209, 255, 0.08);
+}
+
+.signal-chip.signal-strong {
+  background: rgba(61, 213, 152, 0.16);
+  border-color: rgba(61, 213, 152, 0.22);
+}
+
+.signal-chip.signal-high {
+  background: rgba(88, 209, 255, 0.14);
+}
+
+.signal-chip.signal-medium {
+  background: rgba(255, 138, 48, 0.12);
+  border-color: rgba(255, 138, 48, 0.18);
+}
+
+.signal-chip.signal-low {
+  background: rgba(148, 163, 184, 0.14);
+  border-color: rgba(148, 163, 184, 0.18);
+}
+
+.candidate-details {
+  margin-top: 0.7rem;
+  color: var(--text-soft);
+}
+
+.candidate-details summary {
+  cursor: pointer;
+  color: #eaf6ff;
+}
+
+.breakdown-grid span {
+  padding: 0.35rem 0.65rem;
+  border-radius: 12px;
+  background: rgba(6, 16, 30, 0.48);
+  border: 1px solid rgba(119, 177, 232, 0.08);
+  font-size: 0.75rem;
 }
 
 .stream-list,

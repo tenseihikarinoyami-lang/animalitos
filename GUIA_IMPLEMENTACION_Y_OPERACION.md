@@ -14,7 +14,7 @@ Capacidades activas:
 - Scheduler para ventanas de sorteo, resumen diario, resumen estadistico matutino y backfill semanal.
 - Calidad diaria por loteria.
 - Resumen estadistico versionado con backtesting y prediccion intradia por sorteo pendiente.
-- Ranking intradia v5 con contexto cruzado entre loterias, recurrencia reciente por hora, coincidencias, parejas, trios, dia de semana, tramo del dia y comparacion contra baseline simple.
+- Ranking intradia v6 con contexto cruzado entre loterias, recurrencia reciente por hora, coincidencias, parejas, trios, dia de semana, tramo del dia, explicabilidad por candidato y comparacion contra baseline simple.
 - Alertas previas al siguiente sorteo para Telegram cuando el scheduler entra en ventana.
 - Deteccion de cambios de ranking entre corridas consecutivas.
 - Auditoria admin.
@@ -45,6 +45,17 @@ Capacidades activas:
   - contexto cruzado de otras loterias del mismo dia
   - repeticion intradia
   - rezago de aparicion
+- Explicabilidad por candidato con:
+  - `strongest_signals`
+  - `rank_delta`
+  - `previous_rank`
+  - `score_delta`
+  - `movement_summary`
+- Calibracion visible del motor con:
+  - loterias mas fuertes y mas debiles
+  - horas mas fuertes y mas debiles
+  - resumen de lift contra baseline
+  - ajustes de pesos aplicados y su motivo
 - Extraccion en tiempo real reforzada con:
   - fusion de resultados entre URL diaria y URL historica del mismo dia
   - reintentos cortos con cache-busting si por hora faltan resultados esperados
@@ -101,8 +112,16 @@ Capacidades activas:
   - metodologia visible
   - backtesting
   - comparacion contra baseline
+  - calibracion por loteria y por hora
+  - pesos recalibrados visibles
   - alertas de cambio entre corridas
   - candidatos por sorteo pendiente
+- Monitoreo y analitica ahora muestran para cada candidato:
+  - por que sube o baja
+  - senales mas fuertes
+  - delta de ranking
+  - delta de score
+  - explicacion expandible por refresh
 - Panel admin reforzado con:
   - estado del sistema
   - resumen de cobertura
@@ -181,8 +200,10 @@ Guias detalladas:
 - Firestore real: OK.
 - Telegram real: OK.
 - Envio de mensaje de prueba: OK.
-- Ranking intradia v5: OK.
+- Ranking intradia v6: OK.
 - Backtesting con baseline: OK.
+- Explicabilidad visual de candidatos: OK.
+- Calibracion visible del motor: OK.
 - Alerta previa al sorteo en pruebas: OK.
 - Scheduler en cola rapida y heartbeat: OK.
 - Frontend con warmup/login cache: OK.

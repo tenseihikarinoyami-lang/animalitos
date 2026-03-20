@@ -12,6 +12,8 @@ from app.models.schemas import (
     BacktestingHourMetric,
     BacktestingLotteryMetric,
     BacktestingSummary,
+    CalibrationAdjustment,
+    CandidateSignal,
     DashboardOverview,
     DrawPredictionCandidate,
     DrawPredictionWindow,
@@ -32,29 +34,92 @@ from app.services.schedule import build_next_draw, expected_draws_by_now, local_
 from app.services.telegram import telegram_service
 
 
+PREVIOUS_COMPONENT_WEIGHTS = {
+    "slot_recent_14d": 0.13,
+    "slot_historical_90d": 0.08,
+    "slot_last4_occurrences": 0.09,
+    "weekday_slot_frequency": 0.07,
+    "daypart_frequency": 0.05,
+    "recent_frequency_7d": 0.07,
+    "recent_frequency_30d": 0.05,
+    "historical_frequency_90d": 0.03,
+    "last_transition": 0.09,
+    "pair_context": 0.07,
+    "trio_context": 0.05,
+    "prefix_overlap": 0.06,
+    "exact_prefix_match": 0.03,
+    "cross_lottery_overlap": 0.06,
+    "cross_lottery_exact": 0.03,
+    "overdue_gap": 0.03,
+    "same_day_repeat_pattern": 0.01,
+}
+
+COMPONENT_LABELS = {
+    "slot_recent_14d": "Frecuencia reciente por hora (14d)",
+    "slot_historical_90d": "Frecuencia historica por hora (90d)",
+    "slot_last4_occurrences": "Presencia en las ultimas 4 apariciones de esa hora",
+    "weekday_slot_frequency": "Coincidencia por dia de semana y hora",
+    "daypart_frequency": "Frecuencia por tramo del dia",
+    "recent_frequency_7d": "Frecuencia global reciente (7d)",
+    "recent_frequency_30d": "Frecuencia global reciente (30d)",
+    "historical_frequency_90d": "Frecuencia global historica (90d)",
+    "last_transition": "Transicion desde el ultimo resultado",
+    "pair_context": "Pareja previa coincidente",
+    "trio_context": "Trio previo coincidente",
+    "prefix_overlap": "Coincidencias con el patron del dia",
+    "exact_prefix_match": "Ruta exacta del dia",
+    "cross_lottery_overlap": "Coincidencia con el contexto de otras loterias",
+    "cross_lottery_exact": "Contexto exacto de otras loterias",
+    "overdue_gap": "Rezago desde ultima aparicion",
+    "same_day_repeat_pattern": "Patron de repeticion intradia",
+}
+
+COMPONENT_WEIGHTS = {
+    "slot_recent_14d": 0.14,
+    "slot_historical_90d": 0.09,
+    "slot_last4_occurrences": 0.08,
+    "weekday_slot_frequency": 0.08,
+    "daypart_frequency": 0.05,
+    "recent_frequency_7d": 0.07,
+    "recent_frequency_30d": 0.05,
+    "historical_frequency_90d": 0.03,
+    "last_transition": 0.09,
+    "pair_context": 0.06,
+    "trio_context": 0.04,
+    "prefix_overlap": 0.05,
+    "exact_prefix_match": 0.02,
+    "cross_lottery_overlap": 0.05,
+    "cross_lottery_exact": 0.02,
+    "overdue_gap": 0.06,
+    "same_day_repeat_pattern": 0.02,
+}
+
+WEIGHT_ADJUSTMENT_RATIONALES = {
+    "slot_recent_14d": "Se refuerza la recurrencia reciente por hora para favorecer ventanas con repeticion estable.",
+    "slot_historical_90d": "Sube ligeramente para dar mas estabilidad historica cuando el contexto intradia es debil.",
+    "slot_last4_occurrences": "Baja para reducir sobreajuste a las ultimas pocas apariciones de la misma hora.",
+    "weekday_slot_frequency": "Se refuerza porque la medicion por dia/hora viene mostrando mejor estabilidad que el contexto exacto.",
+    "daypart_frequency": "Aumenta para amortiguar horas flojas con una senal mas estable por tramo del dia.",
+    "recent_frequency_7d": "Sube para darle mas reaccion al comportamiento reciente sin depender solo del dia actual.",
+    "last_transition": "Se reduce ligeramente para no sobrerreaccionar a una sola transicion previa.",
+    "pair_context": "Se modera para equilibrar contexto y frecuencia estable.",
+    "trio_context": "Se modera porque es mas fragil y menos frecuente que la pareja previa.",
+    "prefix_overlap": "Baja para evitar que el patron observado hoy domine demasiado temprano.",
+    "exact_prefix_match": "Se reduce porque la ruta exacta del dia es una senal muy escasa y volatil.",
+    "cross_lottery_overlap": "Se reduce por el underperformance observado en ventanas de Internacional al usar demasiado contexto cruzado.",
+    "cross_lottery_exact": "Se reduce mas por ser una senal muy especifica y propensa a sobreajuste.",
+    "overdue_gap": "Sube para mejorar el peso del rezago, que aporta diversificacion frente a la frecuencia simple.",
+    "same_day_repeat_pattern": "Sube un poco para capturar repeticiones intradia cuando ya hay jornada observada.",
+}
+
 SCORE_COMPONENTS = [
-    ScoreComponent(key="slot_recent_14d", label="Frecuencia reciente por hora (14d)", weight=0.13),
-    ScoreComponent(key="slot_historical_90d", label="Frecuencia historica por hora (90d)", weight=0.08),
-    ScoreComponent(key="slot_last4_occurrences", label="Presencia en las ultimas 4 apariciones de esa hora", weight=0.09),
-    ScoreComponent(key="weekday_slot_frequency", label="Coincidencia por dia de semana y hora", weight=0.07),
-    ScoreComponent(key="daypart_frequency", label="Frecuencia por tramo del dia", weight=0.05),
-    ScoreComponent(key="recent_frequency_7d", label="Frecuencia global reciente (7d)", weight=0.07),
-    ScoreComponent(key="recent_frequency_30d", label="Frecuencia global reciente (30d)", weight=0.05),
-    ScoreComponent(key="historical_frequency_90d", label="Frecuencia global historica (90d)", weight=0.03),
-    ScoreComponent(key="last_transition", label="Transicion desde el ultimo resultado", weight=0.09),
-    ScoreComponent(key="pair_context", label="Pareja previa coincidente", weight=0.07),
-    ScoreComponent(key="trio_context", label="Trio previo coincidente", weight=0.05),
-    ScoreComponent(key="prefix_overlap", label="Coincidencias con el patron del dia", weight=0.06),
-    ScoreComponent(key="exact_prefix_match", label="Ruta exacta del dia", weight=0.03),
-    ScoreComponent(key="cross_lottery_overlap", label="Coincidencia con el contexto de otras loterias", weight=0.06),
-    ScoreComponent(key="cross_lottery_exact", label="Contexto exacto de otras loterias", weight=0.03),
-    ScoreComponent(key="overdue_gap", label="Rezago desde ultima aparicion", weight=0.03),
-    ScoreComponent(key="same_day_repeat_pattern", label="Patron de repeticion intradia", weight=0.01),
+    ScoreComponent(key=key, label=COMPONENT_LABELS[key], weight=weight)
+    for key, weight in COMPONENT_WEIGHTS.items()
 ]
 
 
 class AnalyticsService:
-    METHODOLOGY_VERSION = "ops-intraday-ranking-v5"
+    METHODOLOGY_VERSION = "ops-intraday-ranking-v6"
     BASELINE_METHODOLOGY_VERSION = "frequency-baseline-v1"
     MINIMUM_BACKTEST_HISTORY = 10
     FULL_TOP_N = 10
@@ -114,6 +179,114 @@ class AnalyticsService:
             candidate.overall_hits,
             candidate.draws_since_last_seen,
         )
+
+    @staticmethod
+    def _signal_intensity(contribution: float) -> str:
+        if contribution >= 10:
+            return "muy-alta"
+        if contribution >= 6:
+            return "alta"
+        if contribution >= 3:
+            return "media"
+        return "baja"
+
+    def _component_raw_value(self, candidate: DrawPredictionCandidate | PossibleResultCandidate, key: str) -> float | None:
+        mapping = {
+            "slot_recent_14d": "recent_slot_hits",
+            "slot_historical_90d": "slot_hits",
+            "slot_last4_occurrences": "last4_slot_hits",
+            "weekday_slot_frequency": "weekday_slot_hits",
+            "daypart_frequency": "daypart_hits",
+            "recent_frequency_7d": "recent_hits",
+            "recent_frequency_30d": "recent_hits",
+            "historical_frequency_90d": "overall_hits",
+            "last_transition": "transition_hits",
+            "pair_context": "pair_context_hits",
+            "trio_context": "trio_context_hits",
+            "prefix_overlap": "coincidence_hits",
+            "exact_prefix_match": "exact_context_hits",
+            "cross_lottery_overlap": "cross_lottery_hits",
+            "cross_lottery_exact": "cross_lottery_exact_hits",
+            "overdue_gap": "draws_since_last_seen",
+            "same_day_repeat_pattern": "same_day_repeat_hits",
+        }
+        attr_name = mapping.get(key)
+        if not attr_name:
+            return None
+
+        if hasattr(candidate, attr_name):
+            raw_value = getattr(candidate, attr_name)
+            if raw_value is not None:
+                return float(raw_value)
+
+        if key == "slot_historical_90d" and hasattr(candidate, "remaining_time_hits"):
+            raw_value = getattr(candidate, "remaining_time_hits")
+            if raw_value is not None:
+                return float(raw_value)
+
+        return None
+
+    def _top_signal_details(
+        self,
+        candidate: DrawPredictionCandidate | PossibleResultCandidate,
+        *,
+        limit: int = 3,
+    ) -> list[CandidateSignal]:
+        ranked = sorted(
+            candidate.score_breakdown.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        signals = []
+        for key, contribution in ranked:
+            if contribution <= 0:
+                continue
+            signals.append(
+                CandidateSignal(
+                    key=key,
+                    label=COMPONENT_LABELS.get(key, key),
+                    contribution=round(contribution, 2),
+                    weight=COMPONENT_WEIGHTS.get(key, 0),
+                    raw_value=self._component_raw_value(candidate, key),
+                    intensity=self._signal_intensity(contribution),
+                )
+            )
+            if len(signals) >= limit:
+                break
+        return signals
+
+    def _summarize_candidate_movement(
+        self,
+        candidate: DrawPredictionCandidate | PossibleResultCandidate,
+        *,
+        previous_candidate: dict | None = None,
+    ) -> str | None:
+        signals = candidate.strongest_signals or self._top_signal_details(candidate)
+        signal_labels = [signal.label.lower() for signal in signals[:2]]
+        reasons = ", ".join(signal_labels)
+
+        if previous_candidate is None:
+            if not reasons:
+                return None
+            return f"Entra con fuerza por {reasons}."
+
+        movement_prefix = None
+        if candidate.rank_delta:
+            if candidate.rank_delta > 0:
+                movement_prefix = f"Sube {candidate.rank_delta} puesto{'s' if candidate.rank_delta != 1 else ''}"
+            elif candidate.rank_delta < 0:
+                movement_prefix = f"Baja {abs(candidate.rank_delta)} puesto{'s' if abs(candidate.rank_delta) != 1 else ''}"
+        elif candidate.score_delta:
+            if candidate.score_delta > 0:
+                movement_prefix = "Gana puntuacion"
+            elif candidate.score_delta < 0:
+                movement_prefix = "Pierde puntuacion"
+
+        if not movement_prefix and not reasons:
+            return None
+        if movement_prefix and reasons:
+            return f"{movement_prefix} por {reasons}."
+        return movement_prefix
 
     def _normalize_lotteries(self, lotteries: list[str] | None = None) -> list[str]:
         if not lotteries:
@@ -389,121 +562,131 @@ class AnalyticsService:
             score_breakdown = {
                 "slot_recent_14d": round(
                     self._normalize(window_counters["slot_recent_14d"].get(key, 0), maxima["slot_recent_14d"])
-                    * 0.13
+                    * COMPONENT_WEIGHTS["slot_recent_14d"]
                     * 100,
                     2,
                 ),
                 "slot_historical_90d": round(
                     self._normalize(window_counters["slot_historical_90d"].get(key, 0), maxima["slot_historical_90d"])
-                    * 0.08
+                    * COMPONENT_WEIGHTS["slot_historical_90d"]
                     * 100,
                     2,
                 ),
                 "slot_last4_occurrences": round(
                     self._normalize(window_counters["slot_last4"].get(key, 0), maxima["slot_last4_occurrences"])
-                    * 0.09
+                    * COMPONENT_WEIGHTS["slot_last4_occurrences"]
                     * 100,
                     2,
                 ),
                 "weekday_slot_frequency": round(
                     self._normalize(window_counters["weekday_slot"].get(key, 0), maxima["weekday_slot_frequency"])
-                    * 0.07
+                    * COMPONENT_WEIGHTS["weekday_slot_frequency"]
                     * 100,
                     2,
                 ),
                 "daypart_frequency": round(
-                    self._normalize(global_counters["daypart"].get(key, 0), maxima["daypart_frequency"]) * 0.05 * 100,
+                    self._normalize(global_counters["daypart"].get(key, 0), maxima["daypart_frequency"])
+                    * COMPONENT_WEIGHTS["daypart_frequency"]
+                    * 100,
                     2,
                 ),
                 "recent_frequency_7d": round(
-                    self._normalize(global_counters["recent_7d"].get(key, 0), maxima["recent_frequency_7d"]) * 0.07 * 100,
+                    self._normalize(global_counters["recent_7d"].get(key, 0), maxima["recent_frequency_7d"])
+                    * COMPONENT_WEIGHTS["recent_frequency_7d"]
+                    * 100,
                     2,
                 ),
                 "recent_frequency_30d": round(
                     self._normalize(global_counters["recent_30d"].get(key, 0), maxima["recent_frequency_30d"])
-                    * 0.05
+                    * COMPONENT_WEIGHTS["recent_frequency_30d"]
                     * 100,
                     2,
                 ),
                 "historical_frequency_90d": round(
                     self._normalize(global_counters["historical_90d"].get(key, 0), maxima["historical_frequency_90d"])
-                    * 0.03
+                    * COMPONENT_WEIGHTS["historical_frequency_90d"]
                     * 100,
                     2,
                 ),
                 "last_transition": round(
                     self._normalize(window_counters["last_transition"].get(key, 0), maxima["last_transition"])
-                    * 0.09
+                    * COMPONENT_WEIGHTS["last_transition"]
                     * 100,
                     2,
                 ),
                 "pair_context": round(
-                    self._normalize(window_counters["pair_context"].get(key, 0), maxima["pair_context"]) * 0.07 * 100,
+                    self._normalize(window_counters["pair_context"].get(key, 0), maxima["pair_context"])
+                    * COMPONENT_WEIGHTS["pair_context"]
+                    * 100,
                     2,
                 ),
                 "trio_context": round(
-                    self._normalize(window_counters["trio_context"].get(key, 0), maxima["trio_context"]) * 0.05 * 100,
+                    self._normalize(window_counters["trio_context"].get(key, 0), maxima["trio_context"])
+                    * COMPONENT_WEIGHTS["trio_context"]
+                    * 100,
                     2,
                 ),
                 "prefix_overlap": round(
                     self._normalize(window_counters["prefix_overlap"].get(key, 0), maxima["prefix_overlap"])
-                    * 0.06
+                    * COMPONENT_WEIGHTS["prefix_overlap"]
                     * 100,
                     2,
                 ),
                 "exact_prefix_match": round(
                     self._normalize(window_counters["exact_prefix"].get(key, 0), maxima["exact_prefix_match"])
-                    * 0.03
+                    * COMPONENT_WEIGHTS["exact_prefix_match"]
                     * 100,
                     2,
                 ),
                 "cross_lottery_overlap": round(
                     self._normalize(window_counters["cross_overlap"].get(key, 0), maxima["cross_lottery_overlap"])
-                    * 0.06
+                    * COMPONENT_WEIGHTS["cross_lottery_overlap"]
                     * 100,
                     2,
                 ),
                 "cross_lottery_exact": round(
                     self._normalize(window_counters["cross_exact"].get(key, 0), maxima["cross_lottery_exact"])
-                    * 0.03
+                    * COMPONENT_WEIGHTS["cross_lottery_exact"]
                     * 100,
                     2,
                 ),
                 "overdue_gap": round(
-                    self._normalize(global_counters["last_seen_draws"].get(key, 0), maxima["overdue_gap"]) * 0.03 * 100,
+                    self._normalize(global_counters["last_seen_draws"].get(key, 0), maxima["overdue_gap"])
+                    * COMPONENT_WEIGHTS["overdue_gap"]
+                    * 100,
                     2,
                 ),
                 "same_day_repeat_pattern": round(
                     self._normalize(window_counters["same_day_repeat"].get(key, 0), maxima["same_day_repeat_pattern"])
-                    * 0.01
+                    * COMPONENT_WEIGHTS["same_day_repeat_pattern"]
                     * 100,
                     2,
                 ),
             }
-            candidates.append(
-                DrawPredictionCandidate(
-                    animal_number=animal_number,
-                    animal_name=animal_name,
-                    score=round(sum(score_breakdown.values()), 2),
-                    slot_hits=window_counters["slot_historical_90d"].get(key, 0),
-                    recent_slot_hits=window_counters["slot_recent_14d"].get(key, 0),
-                    last4_slot_hits=window_counters["slot_last4"].get(key, 0),
-                    transition_hits=window_counters["last_transition"].get(key, 0),
-                    coincidence_hits=window_counters["prefix_overlap"].get(key, 0),
-                    overall_hits=global_counters["historical_90d"].get(key, 0),
-                    recent_hits=global_counters["recent_30d"].get(key, 0),
-                    draws_since_last_seen=global_counters["last_seen_draws"].get(key, 0),
-                    weekday_slot_hits=window_counters["weekday_slot"].get(key, 0),
-                    daypart_hits=global_counters["daypart"].get(key, 0),
-                    pair_context_hits=window_counters["pair_context"].get(key, 0),
-                    trio_context_hits=window_counters["trio_context"].get(key, 0),
-                    exact_context_hits=window_counters["exact_prefix"].get(key, 0),
-                    same_day_repeat_hits=window_counters["same_day_repeat"].get(key, 0),
-                    cross_lottery_hits=window_counters["cross_overlap"].get(key, 0),
-                    cross_lottery_exact_hits=window_counters["cross_exact"].get(key, 0),
-                    score_breakdown=score_breakdown,
-                )
+            candidate = DrawPredictionCandidate(
+                animal_number=animal_number,
+                animal_name=animal_name,
+                score=round(sum(score_breakdown.values()), 2),
+                slot_hits=window_counters["slot_historical_90d"].get(key, 0),
+                recent_slot_hits=window_counters["slot_recent_14d"].get(key, 0),
+                last4_slot_hits=window_counters["slot_last4"].get(key, 0),
+                transition_hits=window_counters["last_transition"].get(key, 0),
+                coincidence_hits=window_counters["prefix_overlap"].get(key, 0),
+                overall_hits=global_counters["historical_90d"].get(key, 0),
+                recent_hits=global_counters["recent_30d"].get(key, 0),
+                draws_since_last_seen=global_counters["last_seen_draws"].get(key, 0),
+                weekday_slot_hits=window_counters["weekday_slot"].get(key, 0),
+                daypart_hits=global_counters["daypart"].get(key, 0),
+                pair_context_hits=window_counters["pair_context"].get(key, 0),
+                trio_context_hits=window_counters["trio_context"].get(key, 0),
+                exact_context_hits=window_counters["exact_prefix"].get(key, 0),
+                same_day_repeat_hits=window_counters["same_day_repeat"].get(key, 0),
+                cross_lottery_hits=window_counters["cross_overlap"].get(key, 0),
+                cross_lottery_exact_hits=window_counters["cross_exact"].get(key, 0),
+                score_breakdown=score_breakdown,
             )
+            candidate.strongest_signals = self._top_signal_details(candidate)
+            candidates.append(candidate)
 
         candidates.sort(key=self._candidate_sort_key, reverse=True)
         minutes_until = None
@@ -540,7 +723,11 @@ class AnalyticsService:
             cross_lottery_hits=candidate.cross_lottery_hits,
             cross_lottery_exact_hits=candidate.cross_lottery_exact_hits,
             score_breakdown=dict(candidate.score_breakdown),
+            strongest_signals=list(candidate.strongest_signals),
             rank_delta=candidate.rank_delta,
+            previous_rank=candidate.previous_rank,
+            score_delta=candidate.score_delta,
+            movement_summary=candidate.movement_summary,
         )
 
     def _annotate_rank_deltas(
@@ -548,17 +735,31 @@ class AnalyticsService:
         current_candidates: list[DrawPredictionCandidate],
         previous_candidates: list[dict] | None,
     ) -> None:
-        if not previous_candidates:
-            return
-        previous_positions = {
-            item.get("animal_number"): index
-            for index, item in enumerate(previous_candidates)
-            if item.get("animal_number") is not None
-        }
+        has_previous = bool(previous_candidates)
+        previous_positions = {}
+        previous_map = {}
+        for index, item in enumerate(previous_candidates or []):
+            animal_number = item.get("animal_number")
+            if animal_number is None:
+                continue
+            previous_positions[animal_number] = index
+            previous_map[animal_number] = item
+
         for index, candidate in enumerate(current_candidates):
+            candidate.strongest_signals = self._top_signal_details(candidate)
             previous_index = previous_positions.get(candidate.animal_number)
+            previous_candidate = previous_map.get(candidate.animal_number)
             if previous_index is not None:
                 candidate.rank_delta = previous_index - index
+                candidate.previous_rank = previous_index + 1
+            previous_score = previous_candidate.get("score") if previous_candidate else None
+            if previous_score is not None:
+                candidate.score_delta = round(candidate.score - float(previous_score), 2)
+            candidate.movement_summary = (
+                self._summarize_candidate_movement(candidate, previous_candidate=previous_candidate)
+                if has_previous
+                else None
+            )
 
     def _previous_window_maps(self, previous_summary: dict | None) -> tuple[dict[tuple[str, str], dict], dict[str, list[dict]]]:
         window_map = {}
@@ -621,6 +822,107 @@ class AnalyticsService:
                 ]
 
         summary.change_alerts = change_alerts[:10]
+
+    def _build_weight_adjustments(self) -> list[CalibrationAdjustment]:
+        adjustments = []
+        for key, current_weight in COMPONENT_WEIGHTS.items():
+            previous_weight = PREVIOUS_COMPONENT_WEIGHTS.get(key, current_weight)
+            delta = round(current_weight - previous_weight, 4)
+            if abs(delta) < 0.005:
+                continue
+            adjustments.append(
+                CalibrationAdjustment(
+                    key=key,
+                    label=COMPONENT_LABELS.get(key, key),
+                    previous_weight=previous_weight,
+                    current_weight=current_weight,
+                    delta=delta,
+                    rationale=WEIGHT_ADJUSTMENT_RATIONALES.get(
+                        key,
+                        "Ajuste aplicado para balancear estabilidad y contexto intradia.",
+                    ),
+                )
+            )
+        adjustments.sort(key=lambda item: abs(item.delta), reverse=True)
+        return adjustments
+
+    def _build_calibration_payload(
+        self,
+        *,
+        by_lottery: list[BacktestingLotteryMetric],
+        by_hour: list[BacktestingHourMetric],
+        overall_top_3_rate: float,
+        baseline_overall_top_3_rate: float,
+    ) -> dict[str, Any]:
+        strongest_lotteries = sorted(
+            by_lottery,
+            key=lambda item: (item.lift_top_3, item.top_3_rate, item.total_draws),
+            reverse=True,
+        )[:3]
+        weakest_lotteries = sorted(
+            by_lottery,
+            key=lambda item: (item.lift_top_3, item.top_3_rate, item.total_draws),
+        )[:3]
+        strongest_hours = sorted(
+            by_hour,
+            key=lambda item: ((item.top_3_rate - item.baseline_top_3_rate), item.top_3_rate, item.total_draws),
+            reverse=True,
+        )[:5]
+        weakest_hours = sorted(
+            by_hour,
+            key=lambda item: ((item.top_3_rate - item.baseline_top_3_rate), item.top_3_rate, item.total_draws),
+        )[:5]
+
+        strongest_lottery = strongest_lotteries[0] if strongest_lotteries else None
+        weakest_lottery = weakest_lotteries[0] if weakest_lotteries else None
+        strongest_hour = strongest_hours[0] if strongest_hours else None
+        weakest_hour = weakest_hours[0] if weakest_hours else None
+        overall_lift = round(overall_top_3_rate - baseline_overall_top_3_rate, 4)
+        status_label = "supera" if overall_lift >= 0 else "todavia no supera"
+        summary = (
+            f"El ranking {status_label} el baseline simple en Top 3 por "
+            f"{overall_lift * 100:+.1f} puntos sobre la ventana medida."
+        )
+
+        notes = [
+            (
+                f"Mejor loteria actual: {strongest_lottery.lottery_name} con Top 3 "
+                f"{strongest_lottery.top_3_rate * 100:.1f}% y lift {strongest_lottery.lift_top_3 * 100:+.1f} pts."
+            )
+            if strongest_lottery
+            else "No hay suficiente data para identificar una loteria fuerte."
+        ]
+        if weakest_lottery:
+            notes.append(
+                f"Loteria a vigilar: {weakest_lottery.lottery_name} con Top 3 {weakest_lottery.top_3_rate * 100:.1f}% "
+                f"y lift {weakest_lottery.lift_top_3 * 100:+.1f} pts."
+            )
+        if strongest_hour:
+            notes.append(
+                f"Ventana mas estable: {strongest_hour.lottery_name} {strongest_hour.draw_time_local} "
+                f"({strongest_hour.top_3_rate * 100:.1f}% Top 3)."
+            )
+        if weakest_hour:
+            notes.append(
+                f"Ventana mas debil: {weakest_hour.lottery_name} {weakest_hour.draw_time_local} "
+                f"({weakest_hour.top_3_rate * 100:.1f}% Top 3 vs {weakest_hour.baseline_top_3_rate * 100:.1f}% baseline)."
+            )
+        if overall_lift < 0:
+            notes.append(
+                "La recalibracion actual prioriza estabilidad por hora y dia; conviene seguir observando si reduce el gap negativo."
+            )
+        else:
+            notes.append("La recalibracion ya esta empujando las ventanas donde el contexto reciente supera a la frecuencia simple.")
+
+        return {
+            "calibration_summary": summary,
+            "calibration_notes": notes,
+            "weight_adjustments": self._build_weight_adjustments(),
+            "strongest_lotteries": strongest_lotteries,
+            "weakest_lotteries": weakest_lotteries,
+            "strongest_hours": strongest_hours,
+            "weakest_hours": weakest_hours,
+        }
 
     def _build_candidates_for_reference(
         self,
@@ -954,7 +1256,9 @@ class AnalyticsService:
                 "Ranking intradia por loteria, hora, dia de semana y tramo del dia. "
                 "Combina ventanas historicas de 7, 14, 30 y 90 dias con recurrencia de la misma hora, "
                 "transiciones entre sorteos, contexto de parejas y trios previos, coincidencias del patron observado hoy, "
-                "contexto cruzado de otras loterias, patrones de repeticion intradia y rezago desde la ultima aparicion."
+                "contexto cruzado de otras loterias, patrones de repeticion intradia y rezago desde la ultima aparicion. "
+                "La version actual recalibra pesos para dar mas estabilidad a frecuencia por hora, dia y rezago, y menos "
+                "peso a coincidencias exactas muy fragiles."
             ),
             disclaimer="Proyeccion estadistica operativa. No garantiza aciertos ni reemplaza criterio propio.",
             baseline_methodology_version=self.BASELINE_METHODOLOGY_VERSION,
@@ -1167,6 +1471,12 @@ class AnalyticsService:
 
         overall_top_3_rate = round((overall_top3 / overall_total) if overall_total else 0, 4)
         baseline_overall_top_3_rate = round((baseline_overall_top3 / overall_total) if overall_total else 0, 4)
+        calibration_payload = self._build_calibration_payload(
+            by_lottery=by_lottery,
+            by_hour=by_hour,
+            overall_top_3_rate=overall_top_3_rate,
+            baseline_overall_top_3_rate=baseline_overall_top_3_rate,
+        )
         return BacktestingSummary(
             generated_at=utc_now(),
             days=days,
@@ -1182,6 +1492,13 @@ class AnalyticsService:
             beats_baseline=overall_top_3_rate >= baseline_overall_top_3_rate,
             by_lottery=by_lottery,
             by_hour=by_hour,
+            calibration_summary=calibration_payload["calibration_summary"],
+            calibration_notes=calibration_payload["calibration_notes"],
+            weight_adjustments=calibration_payload["weight_adjustments"],
+            strongest_lotteries=calibration_payload["strongest_lotteries"],
+            weakest_lotteries=calibration_payload["weakest_lotteries"],
+            strongest_hours=calibration_payload["strongest_hours"],
+            weakest_hours=calibration_payload["weakest_hours"],
         )
 
     def build_quality_report(self, days: int | None = None, lotteries: list[str] | None = None) -> QualityReportResponse:

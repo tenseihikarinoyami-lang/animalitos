@@ -171,6 +171,7 @@ def test_possible_results_summary_prioritizes_recent_and_frequent_animals():
     assert lotto_activo.history_results_considered >= 8
     assert lotto_activo.top_10
     assert lotto_activo.draw_predictions[0].candidates[0].score_breakdown
+    assert lotto_activo.draw_predictions[0].candidates[0].strongest_signals
     assert summary.baseline_methodology_version == analytics_service.BASELINE_METHODOLOGY_VERSION
 
 
@@ -187,6 +188,10 @@ def test_backtesting_summary_exposes_baseline_metrics():
     assert summary.by_lottery
     assert summary.by_lottery[0].baseline_top_3_rate >= 0
     assert isinstance(summary.beats_baseline, bool)
+    assert summary.calibration_summary
+    assert summary.weight_adjustments
+    assert summary.strongest_lotteries
+    assert summary.weakest_hours
 
 
 def test_possible_results_summary_uses_cross_lottery_and_recent_slot_context():
@@ -222,6 +227,7 @@ def test_possible_results_summary_uses_cross_lottery_and_recent_slot_context():
     assert "slot_last4_occurrences" in candidate_21.score_breakdown
     assert candidate_21.cross_lottery_hits > 0
     assert candidate_21.last4_slot_hits > 0
+    assert candidate_21.strongest_signals
 
 
 @pytest.mark.asyncio

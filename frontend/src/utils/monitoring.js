@@ -57,6 +57,48 @@ export function countdownLabel(minutes) {
   return `${hours}h ${remainder}m`
 }
 
+export function formatSignedNumber(value, decimals = 0) {
+  if (value === null || value === undefined) return '0'
+  const normalized = Number(value)
+  if (!Number.isFinite(normalized)) return '0'
+  const fixed = normalized.toFixed(decimals)
+  const cleaned = decimals > 0 ? fixed.replace(/\.?0+$/, '') : fixed
+  if (normalized > 0) return `+${cleaned}`
+  return cleaned
+}
+
+export function formatLift(value) {
+  return `${formatSignedNumber((value || 0) * 100, 1)} pts`
+}
+
+export function movementTone(rankDelta, scoreDelta) {
+  if ((rankDelta || 0) > 0 || (scoreDelta || 0) > 0) return 'up'
+  if ((rankDelta || 0) < 0 || (scoreDelta || 0) < 0) return 'down'
+  return 'flat'
+}
+
+export function signalSummary(candidate, limit = 3) {
+  const signals = candidate?.strongest_signals || []
+  if (!signals.length) return 'Sin senales destacadas todavia.'
+  return signals
+    .slice(0, limit)
+    .map((signal) => `${signal.label} ${signal.contribution.toFixed(1)}`)
+    .join(' | ')
+}
+
+export function signalTone(signal) {
+  switch (signal?.intensity) {
+    case 'muy-alta':
+      return 'signal-strong'
+    case 'alta':
+      return 'signal-high'
+    case 'media':
+      return 'signal-medium'
+    default:
+      return 'signal-low'
+  }
+}
+
 function toTitleCaseToken(value) {
   return (value || '')
     .normalize('NFD')

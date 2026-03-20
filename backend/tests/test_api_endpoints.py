@@ -106,6 +106,7 @@ def test_possible_results_preview_and_telegram_dispatch(client, admin_headers, m
     assert telegram_response.status_code == 200
     assert preview_response.json()["lotteries"]
     assert preview_response.json()["lotteries"][0]["draw_predictions"]
+    assert preview_response.json()["lotteries"][0]["draw_predictions"][0]["candidates"][0]["strongest_signals"]
     assert telegram_response.json()["details"]["sent"] is True
     assert sent_payload["summary"]["lotteries"]
 
@@ -154,6 +155,8 @@ def test_admin_quality_status_audit_and_backtesting_routes(client, admin_headers
     assert "scheduler_last_received_at" in status_response.json()
     assert audit_response.json()[0]["action"] == "results_refresh"
     assert "overall_top_3_rate" in backtesting_response.json()
+    assert "calibration_summary" in backtesting_response.json()
+    assert "weight_adjustments" in backtesting_response.json()
 
 
 def test_admin_background_backfill_status_routes(client, admin_headers, monkeypatch):
