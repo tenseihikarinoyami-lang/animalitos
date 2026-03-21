@@ -161,6 +161,9 @@ class PossibleResultCandidate(BaseModel):
     same_day_repeat_hits: int = 0
     cross_lottery_hits: int = 0
     cross_lottery_exact_hits: int = 0
+    strategy_hits: int = 0
+    strategy_weighted_hits: float = 0
+    enjaulado_days_without_hit: int = 0
     score_breakdown: dict[str, float] = Field(default_factory=dict)
     strongest_signals: list[CandidateSignal] = Field(default_factory=list)
     rank_delta: int | None = None
@@ -189,6 +192,9 @@ class DrawPredictionCandidate(BaseModel):
     same_day_repeat_hits: int = 0
     cross_lottery_hits: int = 0
     cross_lottery_exact_hits: int = 0
+    strategy_hits: int = 0
+    strategy_weighted_hits: float = 0
+    enjaulado_days_without_hit: int = 0
     score_breakdown: dict[str, float] = Field(default_factory=dict)
     strongest_signals: list[CandidateSignal] = Field(default_factory=list)
     rank_delta: int | None = None

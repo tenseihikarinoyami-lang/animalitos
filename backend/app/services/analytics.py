@@ -43,23 +43,26 @@ from app.services.telegram import telegram_service
 
 
 PREVIOUS_COMPONENT_WEIGHTS = {
-    "slot_recent_14d": 0.13,
-    "slot_historical_90d": 0.08,
-    "slot_last4_occurrences": 0.09,
-    "weekday_slot_frequency": 0.07,
+    "slot_recent_14d": 0.14,
+    "slot_historical_90d": 0.09,
+    "slot_last4_occurrences": 0.08,
+    "weekday_slot_frequency": 0.08,
     "daypart_frequency": 0.05,
     "recent_frequency_7d": 0.07,
     "recent_frequency_30d": 0.05,
     "historical_frequency_90d": 0.03,
     "last_transition": 0.09,
-    "pair_context": 0.07,
-    "trio_context": 0.05,
-    "prefix_overlap": 0.06,
-    "exact_prefix_match": 0.03,
-    "cross_lottery_overlap": 0.06,
-    "cross_lottery_exact": 0.03,
-    "overdue_gap": 0.03,
-    "same_day_repeat_pattern": 0.01,
+    "pair_context": 0.06,
+    "trio_context": 0.04,
+    "prefix_overlap": 0.05,
+    "exact_prefix_match": 0.02,
+    "cross_lottery_overlap": 0.05,
+    "cross_lottery_exact": 0.02,
+    "overdue_gap": 0.06,
+    "same_day_repeat_pattern": 0.02,
+    "strategy_consensus": 0.0,
+    "strategy_adaptive": 0.0,
+    "enjaulado_pressure": 0.0,
 }
 
 COMPONENT_LABELS = {
@@ -80,26 +83,32 @@ COMPONENT_LABELS = {
     "cross_lottery_exact": "Contexto exacto de otras loterias",
     "overdue_gap": "Rezago desde ultima aparicion",
     "same_day_repeat_pattern": "Patron de repeticion intradia",
+    "strategy_consensus": "Consenso entre estrategias externas",
+    "strategy_adaptive": "Peso adaptativo de estrategias segun aciertos del dia",
+    "enjaulado_pressure": "Presion por animal enjaulado",
 }
 
 COMPONENT_WEIGHTS = {
-    "slot_recent_14d": 0.14,
-    "slot_historical_90d": 0.09,
-    "slot_last4_occurrences": 0.08,
-    "weekday_slot_frequency": 0.08,
-    "daypart_frequency": 0.05,
-    "recent_frequency_7d": 0.07,
-    "recent_frequency_30d": 0.05,
+    "slot_recent_14d": 0.12,
+    "slot_historical_90d": 0.08,
+    "slot_last4_occurrences": 0.07,
+    "weekday_slot_frequency": 0.07,
+    "daypart_frequency": 0.04,
+    "recent_frequency_7d": 0.06,
+    "recent_frequency_30d": 0.04,
     "historical_frequency_90d": 0.03,
-    "last_transition": 0.09,
-    "pair_context": 0.06,
-    "trio_context": 0.04,
-    "prefix_overlap": 0.05,
+    "last_transition": 0.08,
+    "pair_context": 0.05,
+    "trio_context": 0.03,
+    "prefix_overlap": 0.04,
     "exact_prefix_match": 0.02,
-    "cross_lottery_overlap": 0.05,
-    "cross_lottery_exact": 0.02,
-    "overdue_gap": 0.06,
+    "cross_lottery_overlap": 0.04,
+    "cross_lottery_exact": 0.01,
+    "overdue_gap": 0.05,
     "same_day_repeat_pattern": 0.02,
+    "strategy_consensus": 0.08,
+    "strategy_adaptive": 0.05,
+    "enjaulado_pressure": 0.02,
 }
 
 WEIGHT_ADJUSTMENT_RATIONALES = {
@@ -116,8 +125,11 @@ WEIGHT_ADJUSTMENT_RATIONALES = {
     "exact_prefix_match": "Se reduce porque la ruta exacta del dia es una senal muy escasa y volatil.",
     "cross_lottery_overlap": "Se reduce por el underperformance observado en ventanas de Internacional al usar demasiado contexto cruzado.",
     "cross_lottery_exact": "Se reduce mas por ser una senal muy especifica y propensa a sobreajuste.",
-    "overdue_gap": "Sube para mejorar el peso del rezago, que aporta diversificacion frente a la frecuencia simple.",
+    "overdue_gap": "Se equilibra con enjaulados para no empujar demasiado un mismo rezago por dos vias distintas.",
     "same_day_repeat_pattern": "Sube un poco para capturar repeticiones intradia cuando ya hay jornada observada.",
+    "strategy_consensus": "Nueva senal de consenso externo para capturar animales repetidos entre varias estrategias del dia.",
+    "strategy_adaptive": "Nueva senal adaptativa que refuerza estrategias que vienen acertando mejor en la jornada actual.",
+    "enjaulado_pressure": "Nueva senal ligera para incorporar el rezago operativo de los animalitos enjaulados por loteria.",
 }
 
 SCORE_COMPONENTS = [
@@ -127,7 +139,7 @@ SCORE_COMPONENTS = [
 
 
 class AnalyticsService:
-    METHODOLOGY_VERSION = "ops-intraday-ranking-v6"
+    METHODOLOGY_VERSION = "ops-intraday-ranking-v7"
     BASELINE_METHODOLOGY_VERSION = "frequency-baseline-v1"
     MINIMUM_BACKTEST_HISTORY = 10
     FULL_TOP_N = 10
@@ -173,6 +185,9 @@ class AnalyticsService:
     def _candidate_sort_key(candidate: DrawPredictionCandidate):
         return (
             candidate.score,
+            candidate.strategy_weighted_hits,
+            candidate.strategy_hits,
+            candidate.enjaulado_days_without_hit,
             candidate.cross_lottery_exact_hits,
             candidate.cross_lottery_hits,
             candidate.last4_slot_hits,
@@ -217,6 +232,9 @@ class AnalyticsService:
             "cross_lottery_exact": "cross_lottery_exact_hits",
             "overdue_gap": "draws_since_last_seen",
             "same_day_repeat_pattern": "same_day_repeat_hits",
+            "strategy_consensus": "strategy_hits",
+            "strategy_adaptive": "strategy_weighted_hits",
+            "enjaulado_pressure": "enjaulado_days_without_hit",
         }
         attr_name = mapping.get(key)
         if not attr_name:
@@ -526,6 +544,7 @@ class AnalyticsService:
         market_today_results: list[dict],
         market_historical_days: dict[str, list[dict]],
         global_counters: dict[str, Any],
+        strategy_context: dict[str, Any],
         reference_local: datetime,
         top_n: int,
     ) -> DrawPredictionWindow:
@@ -562,11 +581,17 @@ class AnalyticsService:
             "cross_lottery_exact": max(window_counters["cross_exact"].values(), default=1),
             "overdue_gap": max(global_counters["last_seen_draws"].values(), default=1) or 1,
             "same_day_repeat_pattern": max(window_counters["same_day_repeat"].values(), default=1),
+            "strategy_consensus": max(strategy_context.get("consensus_counts", {}).values(), default=1),
+            "strategy_adaptive": max(strategy_context.get("adaptive_scores", {}).values(), default=1),
+            "enjaulado_pressure": strategy_context.get("enjaulado_max", 1) or 1,
         }
 
         candidates: list[DrawPredictionCandidate] = []
         for animal_number, animal_name in self._all_animal_keys():
             key = (animal_number, animal_name)
+            strategy_hits = strategy_context.get("consensus_counts", {}).get(key, 0)
+            strategy_weighted_hits = strategy_context.get("adaptive_scores", {}).get(key, 0)
+            enjaulado_days = strategy_context.get("enjaulados_by_lottery", {}).get(lottery_name, {}).get(key, 0)
             score_breakdown = {
                 "slot_recent_14d": round(
                     self._normalize(window_counters["slot_recent_14d"].get(key, 0), maxima["slot_recent_14d"])
@@ -670,6 +695,24 @@ class AnalyticsService:
                     * 100,
                     2,
                 ),
+                "strategy_consensus": round(
+                    self._normalize(strategy_hits, maxima["strategy_consensus"])
+                    * COMPONENT_WEIGHTS["strategy_consensus"]
+                    * 100,
+                    2,
+                ),
+                "strategy_adaptive": round(
+                    self._normalize(strategy_weighted_hits, maxima["strategy_adaptive"])
+                    * COMPONENT_WEIGHTS["strategy_adaptive"]
+                    * 100,
+                    2,
+                ),
+                "enjaulado_pressure": round(
+                    self._normalize(enjaulado_days, maxima["enjaulado_pressure"])
+                    * COMPONENT_WEIGHTS["enjaulado_pressure"]
+                    * 100,
+                    2,
+                ),
             }
             candidate = DrawPredictionCandidate(
                 animal_number=animal_number,
@@ -691,6 +734,9 @@ class AnalyticsService:
                 same_day_repeat_hits=window_counters["same_day_repeat"].get(key, 0),
                 cross_lottery_hits=window_counters["cross_overlap"].get(key, 0),
                 cross_lottery_exact_hits=window_counters["cross_exact"].get(key, 0),
+                strategy_hits=strategy_hits,
+                strategy_weighted_hits=round(strategy_weighted_hits, 2),
+                enjaulado_days_without_hit=enjaulado_days,
                 score_breakdown=score_breakdown,
             )
             candidate.strongest_signals = self._top_signal_details(candidate)
@@ -730,6 +776,9 @@ class AnalyticsService:
             same_day_repeat_hits=candidate.same_day_repeat_hits,
             cross_lottery_hits=candidate.cross_lottery_hits,
             cross_lottery_exact_hits=candidate.cross_lottery_exact_hits,
+            strategy_hits=candidate.strategy_hits,
+            strategy_weighted_hits=candidate.strategy_weighted_hits,
+            enjaulado_days_without_hit=candidate.enjaulado_days_without_hit,
             score_breakdown=dict(candidate.score_breakdown),
             strongest_signals=list(candidate.strongest_signals),
             rank_delta=candidate.rank_delta,
@@ -965,6 +1014,7 @@ class AnalyticsService:
             if draw_date != reference_date_str
         }
         date_span = {self._coerce_date_string(result["draw_date"]) for result in results}
+        strategy_context = self._build_external_strategy_context(reference_local)
 
         draw_predictions = []
         for target_draw_time in target_draw_times:
@@ -983,6 +1033,7 @@ class AnalyticsService:
                     market_today_results=market_today_results,
                     market_historical_days=market_historical_days,
                     global_counters=global_counters,
+                    strategy_context=strategy_context,
                     reference_local=reference_local,
                     top_n=top_n,
                 )
@@ -1563,8 +1614,56 @@ class AnalyticsService:
             weakest_hours=[],
         )
 
+    def _daily_external_snapshot_key(self, prefix: str, target_date: date | None = None) -> str:
+        target_date = target_date or local_now().date()
+        return f"{prefix}:{target_date.isoformat()}"
+
+    def _load_enjaulados_data(self, force_refresh: bool = False) -> EnjauladosResponse:
+        snapshot_key = self._daily_external_snapshot_key("external-enjaulados")
+        if not force_refresh:
+            snapshot = db_service.get_analytics_snapshot(snapshot_key)
+            if snapshot:
+                return EnjauladosResponse.model_validate(snapshot)
+
+        try:
+            payload = external_signals_service.get_enjaulados(force_refresh=force_refresh)
+            db_service.save_analytics_snapshot(snapshot_key=snapshot_key, snapshot=payload.model_dump())
+            return payload
+        except Exception:
+            latest_snapshot = db_service.get_latest_analytics_snapshot("external-enjaulados:")
+            if latest_snapshot:
+                return EnjauladosResponse.model_validate(latest_snapshot)
+            return EnjauladosResponse(generated_at=utc_now(), lotteries=[])
+
+    def _load_strategy_sources(self, force_refresh: bool = False) -> list:
+        snapshot_key = self._daily_external_snapshot_key("external-strategies")
+        if not force_refresh:
+            snapshot = db_service.get_analytics_snapshot(snapshot_key)
+            if snapshot:
+                return snapshot.get("sources", [])
+
+        try:
+            payload = external_signals_service.get_strategy_sources(force_refresh=force_refresh)
+            db_service.save_analytics_snapshot(
+                snapshot_key=snapshot_key,
+                snapshot={
+                    "generated_at": utc_now(),
+                    "sources": [item.model_dump() for item in payload],
+                },
+            )
+            return [item.model_dump() for item in payload]
+        except Exception:
+            latest_snapshot = db_service.get_latest_analytics_snapshot("external-strategies:")
+            if latest_snapshot:
+                return latest_snapshot.get("sources", [])
+            return []
+
     def build_enjaulados_summary(self, force_refresh: bool = False) -> EnjauladosResponse:
-        return external_signals_service.get_enjaulados(force_refresh=force_refresh)
+        return self._load_enjaulados_data(force_refresh=force_refresh)
+
+    def refresh_external_signal_snapshots(self) -> None:
+        self._load_enjaulados_data(force_refresh=True)
+        self._load_strategy_sources(force_refresh=True)
 
     def _coerce_local_draw_datetime(self, draw_date_value, draw_time_local: str) -> datetime:
         draw_date = draw_date_value
@@ -1715,8 +1814,55 @@ class AnalyticsService:
             notes=notes,
         )
 
+    def _build_external_strategy_context(self, reference_local: datetime) -> dict[str, Any]:
+        strategy_sources = self._load_strategy_sources(force_refresh=False)
+        enjaulados = self._load_enjaulados_data(force_refresh=False)
+        today_key = reference_local.date().isoformat()
+        today_results = [
+            item
+            for item in db_service.get_results(start_date=today_key, end_date=today_key, limit=None)
+            if self._coerce_datetime(item["draw_datetime_utc"]) <= reference_local.astimezone(timezone.utc)
+        ]
+
+        adaptive_weights = {}
+        consensus_counts = Counter()
+        adaptive_scores = Counter()
+        for source in strategy_sources:
+            animals = source.get("animals", [])
+            numbers = [int(item.get("animal_number")) for item in animals]
+            if today_results:
+                hit_count = sum(1 for result in today_results if int(result["animal_number"]) in numbers)
+                hit_rate = hit_count / len(today_results)
+            else:
+                hit_count = 0
+                hit_rate = 0
+            source_weight = 1.0 + hit_rate
+            adaptive_weights[source.get("key")] = source_weight
+            for animal in animals:
+                key = (int(animal.get("animal_number")), animal.get("animal_name") or get_animal_name(int(animal.get("animal_number"))))
+                consensus_counts[key] += 1
+                adaptive_scores[key] += source_weight
+
+        enjaulados_by_lottery = {}
+        for lottery in enjaulados.lotteries:
+            enjaulados_by_lottery[lottery.canonical_lottery_name] = {
+                (item.animal_number, item.animal_name): item.days_without_hit for item in lottery.items
+            }
+
+        return {
+            "consensus_counts": consensus_counts,
+            "adaptive_scores": adaptive_scores,
+            "enjaulados_by_lottery": enjaulados_by_lottery,
+            "source_count": max(len(strategy_sources), 1),
+            "adaptive_max": max(adaptive_scores.values(), default=1),
+            "enjaulado_max": max(
+                (days for lottery_map in enjaulados_by_lottery.values() for days in lottery_map.values()),
+                default=1,
+            ),
+        }
+
     def build_strategies_summary(self, force_refresh: bool = False) -> StrategiesResponse:
-        strategies = external_signals_service.get_strategy_sources(force_refresh=force_refresh)
+        strategies = self._load_strategy_sources(force_refresh=force_refresh)
         today = local_now().date()
         today_results = [
             item
@@ -1749,9 +1895,9 @@ class AnalyticsService:
         actual_numbers_today = [int(item["animal_number"]) for item in today_results]
 
         for source in strategies:
-            source_numbers = [item.animal_number for item in source.animals]
+            source_numbers = [int(item.get("animal_number")) for item in source.get("animals", [])]
             for animal_number in source_numbers:
-                consensus_counter[animal_number].add(source.title)
+                consensus_counter[animal_number].add(source.get("title"))
                 hits_counter[animal_number] += actual_numbers_today.count(animal_number)
 
             matching_animals = []
@@ -1774,8 +1920,8 @@ class AnalyticsService:
 
             performance_rows.append(
                 StrategyPerformance(
-                    key=source.key,
-                    title=source.title,
+                    key=source.get("key"),
+                    title=source.get("title"),
                     hit_count_today=sum(actual_numbers_today.count(number) for number in source_numbers),
                     evaluated_results_today=len(today_results),
                     hit_rate_today=round(
@@ -1815,7 +1961,7 @@ class AnalyticsService:
             )
 
         notes = [
-            "Las estrategias externas se muestran como senales comparativas; no sustituyen la medicion real del motor.",
+            "Las estrategias externas ya alimentan una capa de consenso y ajuste adaptativo dentro del ranking intradia.",
             "El consenso destaca animalitos repetidos entre varias fuentes y su cruce con el top 5 actual del sistema.",
         ]
         if today_results:

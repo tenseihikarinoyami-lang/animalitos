@@ -9,18 +9,34 @@
         <p class="eyebrow">Lectura bajo demanda</p>
         <h3 class="section-title">Interpretar estrategias externas</h3>
         <p class="section-copy">
-          Cuando pulses el boton, el sistema relee las estrategias de TuAzar, arma consenso entre fuentes y las compara con el motor actual y con los resultados confirmados de hoy.
+          La vista abre primero con snapshots ya guardados por el backend. Si quieres releer las fuentes externas y refrescar el consenso, usa el boton de actualizacion manual.
         </p>
       </div>
-      <button class="btn-primary" :disabled="loadingState" @click="loadStrategies">
+      <button class="btn-primary" :disabled="loadingState" @click="refreshStrategies">
         <span v-if="loadingState" class="spinner"></span>
-        <span v-else>{{ hasLoaded ? 'Reinterpretar estrategias' : 'Leer estrategias ahora' }}</span>
+        <span v-else>{{ hasLoaded ? 'Actualizar desde fuentes' : 'Leer estrategias ahora' }}</span>
       </button>
     </section>
 
     <p v-if="errorState" class="status-banner error">
       {{ errorState }}
     </p>
+
+    <section v-if="hasLoaded" class="glass-card section-card filter-card">
+      <div class="form-field">
+        <label>Estrategia visible</label>
+        <select v-model="selectedStrategyKey" class="select-shell">
+          <option value="">Todas</option>
+          <option
+            v-for="source in strategiesSummary?.sources || []"
+            :key="source.key"
+            :value="source.key"
+          >
+            {{ source.title }}
+          </option>
+        </select>
+      </div>
+    </section>
 
     <section v-if="hasLoaded" class="metric-grid analytics-metrics">
       <article class="glass-card metric-card">
@@ -81,7 +97,7 @@
         <h3 class="section-title">Rendimiento diario de estrategias externas</h3>
         <div class="strategy-grid">
           <div
-            v-for="item in strategiesSummary?.performance || []"
+            v-for="item in filteredPerformance"
             :key="item.key"
             class="strategy-card"
           >
@@ -186,7 +202,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import AppShell from '@/components/AppShell.vue'
 import { useLotteryStore } from '@/stores/lottery'
 import { animalIconUrl, formatPercent, handleIconError } from '@/utils/monitoring'
@@ -197,6 +213,12 @@ const reviewSummary = computed(() => lotteryStore.todayReview)
 const loadingState = ref(false)
 const errorState = ref('')
 const hasLoaded = ref(false)
+const selectedStrategyKey = ref('')
+const filteredPerformance = computed(() => {
+  const items = strategiesSummary.value?.performance || []
+  if (!selectedStrategyKey.value) return items
+  return items.filter((item) => item.key === selectedStrategyKey.value)
+})
 
 function joinNumbers(items = []) {
   if (!items.length) return 'Sin top previo'
@@ -204,6 +226,24 @@ function joinNumbers(items = []) {
 }
 
 async function loadStrategies() {
+  loadingState.value = true
+  errorState.value = ''
+  try {
+    const [strategiesResponse, reviewResponse] = await Promise.all([
+      lotteryStore.fetchStrategies({}, { silent: true }),
+      lotteryStore.fetchTodayReview({}, { silent: true }),
+    ])
+    if (!strategiesResponse || !reviewResponse) {
+      errorState.value = 'No se pudieron cargar los snapshots de estrategias o el review del dia.'
+      return
+    }
+    hasLoaded.value = true
+  } finally {
+    loadingState.value = false
+  }
+}
+
+async function refreshStrategies() {
   loadingState.value = true
   errorState.value = ''
   try {
@@ -220,6 +260,10 @@ async function loadStrategies() {
     loadingState.value = false
   }
 }
+
+onMounted(() => {
+  loadStrategies()
+})
 </script>
 
 <style scoped>
@@ -228,6 +272,10 @@ async function loadStrategies() {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.filter-card {
   margin-bottom: 1rem;
 }
 

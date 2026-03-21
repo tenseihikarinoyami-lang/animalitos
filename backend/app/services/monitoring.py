@@ -25,6 +25,7 @@ class MonitoringService:
         self._refresh_task: asyncio.Task | None = None
         self._self_heal_task: asyncio.Task | None = None
         self._backtesting_snapshot_task: asyncio.Task | None = None
+        self._external_signal_snapshot_task: asyncio.Task | None = None
         self._self_heal_lock = asyncio.Lock()
 
     @staticmethod
@@ -405,6 +406,31 @@ class MonitoringService:
         self._backtesting_snapshot_task = asyncio.create_task(self._run_backtesting_snapshot_refresh())
         return True
 
+    async def _run_external_signal_snapshot_refresh(self) -> None:
+        try:
+            await asyncio.to_thread(analytics_service.refresh_external_signal_snapshots)
+            log_event(
+                logging.getLogger(__name__),
+                logging.INFO,
+                "external_signal_snapshots_refreshed",
+            )
+        except Exception as exc:
+            log_event(
+                logging.getLogger(__name__),
+                logging.ERROR,
+                "external_signal_snapshots_failed",
+                error=str(exc),
+            )
+        finally:
+            self._external_signal_snapshot_task = None
+
+    def start_external_signal_snapshot_refresh(self) -> bool:
+        task_active = bool(self._external_signal_snapshot_task and not self._external_signal_snapshot_task.done())
+        if task_active:
+            return False
+        self._external_signal_snapshot_task = asyncio.create_task(self._run_external_signal_snapshot_refresh())
+        return True
+
     def _latest_prediction_summary(self) -> dict | None:
         latest_prediction = db_service.get_latest_prediction_run()
         return latest_prediction.get("summary") if latest_prediction else None
@@ -559,6 +585,7 @@ class MonitoringService:
             persist_backtesting=False,
         )
         self.start_backtesting_snapshot_refresh()
+        self.start_external_signal_snapshot_refresh()
 
         if notify and save_stats["new_results"]:
             await telegram_service.send_results_digest(save_stats["new_results"], ingestion_run)
@@ -766,6 +793,7 @@ class MonitoringService:
             persist_backtesting=False,
         )
         self.start_backtesting_snapshot_refresh()
+        self.start_external_signal_snapshot_refresh()
         log_event(
             logging.getLogger(__name__),
             logging.INFO,
