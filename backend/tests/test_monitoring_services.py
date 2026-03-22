@@ -213,6 +213,36 @@ def test_backtesting_summary_exposes_baseline_metrics():
     assert summary.weakest_hours
 
 
+def test_historical_frozen_external_signals_do_not_trigger_live_fetch(monkeypatch):
+    historical_date = local_now().date() - timedelta(days=10)
+
+    def fail_live_fetch(*args, **kwargs):
+        raise AssertionError("historical frozen lookups should not hit live external sources")
+
+    monkeypatch.setattr(
+        "app.services.analytics.external_signals_service.get_strategy_sources",
+        fail_live_fetch,
+    )
+    monkeypatch.setattr(
+        "app.services.analytics.external_signals_service.get_enjaulados",
+        fail_live_fetch,
+    )
+
+    strategies = analytics_service._load_strategy_sources(
+        force_refresh=False,
+        target_date=historical_date,
+        frozen=True,
+    )
+    enjaulados = analytics_service._load_enjaulados_data(
+        force_refresh=False,
+        target_date=historical_date,
+        frozen=True,
+    )
+
+    assert strategies == []
+    assert enjaulados.lotteries == []
+
+
 def test_possible_results_summary_uses_cross_lottery_and_recent_slot_context():
     today = local_now().date()
     seed = [

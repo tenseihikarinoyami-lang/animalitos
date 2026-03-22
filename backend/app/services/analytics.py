@@ -2151,6 +2151,8 @@ class AnalyticsService:
             snapshot = db_service.get_analytics_snapshot(snapshot_key)
             if snapshot:
                 return EnjauladosResponse.model_validate(snapshot)
+            if frozen and target_date != local_now().date():
+                return EnjauladosResponse(generated_at=utc_now(), lotteries=[])
 
         try:
             payload = external_signals_service.get_enjaulados(force_refresh=force_refresh)
@@ -2181,6 +2183,8 @@ class AnalyticsService:
             snapshot = db_service.get_analytics_snapshot(snapshot_key)
             if snapshot:
                 return snapshot.get("sources", [])
+            if frozen and target_date != local_now().date():
+                return []
 
         try:
             payload = external_signals_service.get_strategy_sources(force_refresh=force_refresh)
