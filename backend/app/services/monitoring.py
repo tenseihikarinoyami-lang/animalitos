@@ -346,6 +346,7 @@ class MonitoringService:
         trends=None,
         possible_results=None,
         backtesting=None,
+        model_health=None,
         persist_backtesting: bool = True,
     ) -> None:
         overview = overview or analytics_service.build_dashboard_overview()
@@ -353,6 +354,7 @@ class MonitoringService:
         possible_results = possible_results or analytics_service.build_possible_results_summary()
         if persist_backtesting:
             backtesting = backtesting or analytics_service.build_backtesting_summary(days=settings.analytics_default_days)
+        model_health = model_health or analytics_service.build_model_health_summary()
 
         today_key = local_now().date().isoformat()
         db_service.save_analytics_snapshot(snapshot_key=f"overview:{today_key}", snapshot=overview.model_dump())
@@ -369,19 +371,30 @@ class MonitoringService:
                 snapshot_key=f"backtesting:default:{today_key}",
                 snapshot=backtesting.model_dump(),
             )
+        if model_health is not None:
+            db_service.save_analytics_snapshot(
+                snapshot_key=f"model-health:{today_key}",
+                snapshot=model_health.model_dump(),
+            )
 
     async def _run_backtesting_snapshot_refresh(self) -> None:
         try:
+            await asyncio.to_thread(analytics_service.train_models_and_promote)
             backtesting = await asyncio.to_thread(
                 analytics_service.build_backtesting_summary,
                 settings.analytics_default_days,
                 settings.prediction_default_top_n,
                 None,
             )
+            model_health = await asyncio.to_thread(analytics_service.build_model_health_summary)
             today_key = local_now().date().isoformat()
             db_service.save_analytics_snapshot(
                 snapshot_key=f"backtesting:default:{today_key}",
                 snapshot=backtesting.model_dump(),
+            )
+            db_service.save_analytics_snapshot(
+                snapshot_key=f"model-health:{today_key}",
+                snapshot=model_health.model_dump(),
             )
             log_event(
                 logging.getLogger(__name__),
@@ -474,6 +487,9 @@ class MonitoringService:
                             "animal_number": candidate.animal_number,
                             "animal_name": candidate.animal_name,
                             "score": candidate.score,
+                            "ensemble_score": candidate.ensemble_score,
+                            "model_probability": candidate.model_probability,
+                            "confidence_band": candidate.confidence_band,
                             "rank_delta": candidate.rank_delta,
                         }
                         for candidate in next_window.candidates[:3]
@@ -954,11 +970,15 @@ class MonitoringService:
         return await self.refresh_today(trigger=trigger, notify=notify)
 
     async def send_daily_summary(self) -> bool:
+        analytics_service.ensure_daily_external_snapshots(force_refresh=False)
+        analytics_service.train_models_and_promote()
         overview = analytics_service.build_dashboard_overview()
         review_summary = analytics_service.build_today_prediction_review()
+        model_health = analytics_service.build_model_health_summary()
         sent = await telegram_service.send_daily_summary(
             overview.model_dump(),
             review_summary.model_dump(),
+            model_health.model_dump(),
         )
         self._record_scheduler_heartbeat(
             kind="daily-summary",

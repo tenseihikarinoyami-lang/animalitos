@@ -384,6 +384,35 @@
     </section>
 
     <section class="glass-card section-card">
+      <p class="eyebrow">Modelo</p>
+      <h3 class="section-title">Salud del champion por segmento</h3>
+      <div v-if="modelHealth?.segments?.length" class="adjustment-grid">
+        <article
+          v-for="segment in modelHealth.segments"
+          :key="segment.segment_key"
+          class="anomaly-item adjustment-card"
+        >
+          <strong>{{ segment.segment_key }}</strong>
+          <p>Estado {{ segment.status }} | modelo {{ segment.champion_model_key || 'sin champion' }}</p>
+          <p>
+            Top 3 val {{ asPercent(segment.validation_top_3_rate) }} |
+            Top 5 val {{ asPercent(segment.validation_top_5_rate) }} |
+            baseline {{ asPercent(segment.baseline_top_5_rate) }}
+          </p>
+          <p>Calibracion {{ segment.calibration_method || 'n/a' }}</p>
+          <div class="breakdown-grid">
+            <span v-for="band in segment.confidence_bands || []" :key="`${segment.segment_key}-${band.confidence_band}`">
+              {{ band.confidence_band }}: {{ asPercent(band.hit_top_3_rate) }} top 3
+            </span>
+          </div>
+        </article>
+      </div>
+      <div v-else class="empty-state">
+        Todavia no hay salud de modelo disponible.
+      </div>
+    </section>
+
+    <section class="glass-card section-card">
       <p class="eyebrow">Cambios</p>
       <h3 class="section-title">Alertas de movimiento intradia</h3>
       <div v-if="possibleResults?.change_alerts?.length" class="anomaly-list">
@@ -457,9 +486,9 @@
                       {{ candidate.movement_summary || `Movimiento ${formatDelta(candidate.rank_delta)} | score ${formatScoreDelta(candidate.score_delta)}` }}
                     </p>
                     <p>
-                      coincid {{ candidate.coincidence_hits }} | trans {{ candidate.transition_hits }} |
-                      pareja {{ candidate.pair_context_hits }} | trio {{ candidate.trio_context_hits }} |
-                      weekday {{ candidate.weekday_slot_hits }} | overdue {{ candidate.draws_since_last_seen }}
+                      ens {{ candidate.ensemble_score?.toFixed(3) || '0.000' }} | ml {{ candidate.model_probability?.toFixed(3) || '0.000' }} |
+                      regla {{ candidate.rule_score?.toFixed(2) || '0.00' }} | prior {{ candidate.external_prior?.toFixed(3) || '0.000' }} |
+                      conf {{ candidate.confidence_band || 'baja' }} | estabilidad {{ candidate.stability_score?.toFixed(2) || '0.00' }}
                     </p>
                     <div class="signal-chip-row">
                       <span
@@ -486,6 +515,7 @@
                   </div>
                   <div class="candidate-side">
                     <span class="score-chip">{{ candidate.score.toFixed(2) }}</span>
+                    <span class="pill">{{ candidate.segment_key || 'segmento' }}</span>
                     <span class="movement-pill" :class="movementTone(candidate.rank_delta, candidate.score_delta)">
                       Δ {{ formatDelta(candidate.rank_delta) }} | {{ formatScoreDelta(candidate.score_delta) }}
                     </span>
@@ -549,6 +579,7 @@ const analyticsError = ref('')
 const trends = computed(() => lotteryStore.trends)
 const possibleResults = computed(() => lotteryStore.possibleResults)
 const backtesting = computed(() => lotteryStore.backtesting)
+const modelHealth = computed(() => lotteryStore.modelHealth)
 const todayReview = computed(() => lotteryStore.todayReview)
 const predictionRows = computed(() => possibleResults.value?.lotteries || [])
 const overallLiftValue = computed(() => {
@@ -676,6 +707,7 @@ async function loadAnalytics() {
         lotteryStore.fetchTrends(trendParams, { silent: true }),
         lotteryStore.fetchPossibleResults(analyticsPayload, { silent: true }),
         lotteryStore.fetchTodayReview({}, { silent: true }),
+        lotteryStore.fetchModelHealth({ silent: true }),
       ])
 
     backtestingLoading.value = true

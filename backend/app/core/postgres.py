@@ -92,6 +92,60 @@ prediction_runs_table = Table(
     Column("telegram_sent", Boolean, nullable=False, default=False),
 )
 
+model_training_examples_table = Table(
+    "model_training_examples",
+    metadata,
+    Column("example_key", String(255), primary_key=True),
+    Column("segment_key", String(120), nullable=False, index=True),
+    Column("canonical_lottery_name", String(120), nullable=False, index=True),
+    Column("draw_date", Date, nullable=False, index=True),
+    Column("draw_time_local", String(10), nullable=False),
+    Column("animal_number", Integer, nullable=False),
+    Column("label_hit", Boolean, nullable=False),
+    Column("methodology_version", String(80), nullable=False),
+    Column("generated_at", DateTime(timezone=True), nullable=False),
+    Column("features", JSONB, nullable=False),
+    Column("metadata", JSONB, nullable=False),
+)
+
+model_versions_table = Table(
+    "model_versions",
+    metadata,
+    Column("model_key", String(160), primary_key=True),
+    Column("segment_key", String(120), nullable=False, index=True),
+    Column("status", String(32), nullable=False, index=True),
+    Column("trained_at", DateTime(timezone=True), nullable=False),
+    Column("training_start_date", Date, nullable=True),
+    Column("training_end_date", Date, nullable=True),
+    Column("ensemble_weights", JSONB, nullable=False),
+    Column("validation_metrics", JSONB, nullable=False),
+    Column("calibration_method", String(32), nullable=True),
+    Column("artifact", JSONB, nullable=False),
+    Column("notes", JSONB, nullable=False),
+)
+
+prediction_window_reviews_table = Table(
+    "prediction_window_reviews",
+    metadata,
+    Column("review_key", String(255), primary_key=True),
+    Column("segment_key", String(120), nullable=False, index=True),
+    Column("canonical_lottery_name", String(120), nullable=False, index=True),
+    Column("draw_date", Date, nullable=False, index=True),
+    Column("draw_time_local", String(10), nullable=False),
+    Column("actual_animal_number", Integer, nullable=False),
+    Column("actual_animal_name", String(120), nullable=False),
+    Column("predicted_at", DateTime(timezone=True), nullable=True),
+    Column("model_key", String(160), nullable=True),
+    Column("ensemble_version", String(80), nullable=True),
+    Column("lead_signal_key", String(80), nullable=True),
+    Column("confidence_band", String(32), nullable=True),
+    Column("stability_score", Float, nullable=True),
+    Column("hit_top_1", Boolean, nullable=False, default=False),
+    Column("hit_top_3", Boolean, nullable=False, default=False),
+    Column("hit_top_5", Boolean, nullable=False, default=False),
+    Column("payload", JSONB, nullable=False),
+)
+
 admin_audit_logs_table = Table(
     "admin_audit_logs",
     metadata,

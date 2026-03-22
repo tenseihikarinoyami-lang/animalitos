@@ -147,6 +147,15 @@ class PossibleResultCandidate(BaseModel):
     animal_number: int
     animal_name: str
     score: float
+    rule_score: float = 0
+    model_probability: float = 0
+    external_prior: float = 0
+    ensemble_score: float = 0
+    confidence_band: str = "baja"
+    segment_key: str | None = None
+    stability_score: float = 0
+    champion_model_key: str | None = None
+    weak_sample: bool = False
     overall_hits: int
     recent_hits: int
     remaining_time_hits: int
@@ -176,6 +185,15 @@ class DrawPredictionCandidate(BaseModel):
     animal_number: int
     animal_name: str
     score: float
+    rule_score: float = 0
+    model_probability: float = 0
+    external_prior: float = 0
+    ensemble_score: float = 0
+    confidence_band: str = "baja"
+    segment_key: str | None = None
+    stability_score: float = 0
+    champion_model_key: str | None = None
+    weak_sample: bool = False
     slot_hits: int
     recent_slot_hits: int
     last4_slot_hits: int = 0
@@ -208,6 +226,11 @@ class DrawPredictionWindow(BaseModel):
     observed_prefix: list[int] = Field(default_factory=list)
     minutes_until: int | None = None
     daypart: str | None = None
+    segment_key: str | None = None
+    stability_score: float = 0
+    confidence_band: str = "baja"
+    champion_model_key: str | None = None
+    weak_sample: bool = False
     top_candidate_changed: bool = False
     change_summary: str | None = None
     candidates: list[DrawPredictionCandidate]
@@ -233,11 +256,14 @@ class PossibleResultsSummary(BaseModel):
     reference_date: date | None = None
     reference_time_local: str | None = None
     methodology_version: str
+    ensemble_version: str | None = None
     methodology: str
     disclaimer: str
     baseline_methodology_version: str | None = None
     history_days_covered: int
     history_results_considered: int
+    model_version_by_segment: dict[str, str | None] = Field(default_factory=dict)
+    prediction_stability: dict[str, Any] = Field(default_factory=dict)
     score_components: list[ScoreComponent]
     last_backfill_at: datetime | None = None
     change_alerts: list[str] = Field(default_factory=list)
@@ -364,10 +390,14 @@ class PredictionReviewWindow(BaseModel):
     canonical_lottery_name: str
     draw_date: date
     draw_time_local: str
+    segment_key: str | None = None
     actual_animal_number: int
     actual_animal_name: str
     predicted_at: datetime | None = None
     prediction_delivery_status: str | None = None
+    champion_model_key: str | None = None
+    confidence_band: str | None = None
+    stability_score: float | None = None
     predicted_top_1_number: int | None = None
     predicted_top_1_name: str | None = None
     lead_signal_key: str | None = None
@@ -497,6 +527,38 @@ class StrategiesResponse(BaseModel):
     sources: list[StrategySource] = Field(default_factory=list)
     performance: list[StrategyPerformance] = Field(default_factory=list)
     consensus: list[StrategyConsensusAnimal] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ModelHealthBandMetric(BaseModel):
+    confidence_band: str
+    evaluated_draws: int
+    hit_top_1_rate: float
+    hit_top_3_rate: float
+    hit_top_5_rate: float
+
+
+class ModelSegmentHealth(BaseModel):
+    segment_key: str
+    status: str
+    champion_model_key: str | None = None
+    trained_at: datetime | None = None
+    training_start_date: date | None = None
+    training_end_date: date | None = None
+    validation_top_1_rate: float = 0
+    validation_top_3_rate: float = 0
+    validation_top_5_rate: float = 0
+    baseline_top_3_rate: float = 0
+    baseline_top_5_rate: float = 0
+    calibration_method: str | None = None
+    confidence_bands: list[ModelHealthBandMetric] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ModelHealthSummary(BaseModel):
+    generated_at: datetime
+    ensemble_version: str
+    segments: list[ModelSegmentHealth] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 

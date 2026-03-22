@@ -106,7 +106,14 @@ def test_possible_results_preview_and_telegram_dispatch(client, admin_headers, m
     assert telegram_response.status_code == 200
     assert preview_response.json()["lotteries"]
     assert preview_response.json()["lotteries"][0]["draw_predictions"]
-    assert preview_response.json()["lotteries"][0]["draw_predictions"][0]["candidates"][0]["strongest_signals"]
+    first_candidate = preview_response.json()["lotteries"][0]["draw_predictions"][0]["candidates"][0]
+    assert first_candidate["strongest_signals"]
+    assert "model_probability" in first_candidate
+    assert "rule_score" in first_candidate
+    assert "external_prior" in first_candidate
+    assert "ensemble_score" in first_candidate
+    assert "confidence_band" in first_candidate
+    assert "segment_key" in first_candidate
     assert telegram_response.json()["details"]["sent"] is True
     assert sent_payload["summary"]["lotteries"]
 
@@ -157,6 +164,50 @@ def test_admin_quality_status_audit_and_backtesting_routes(client, admin_headers
     assert "overall_top_3_rate" in backtesting_response.json()
     assert "calibration_summary" in backtesting_response.json()
     assert "weight_adjustments" in backtesting_response.json()
+
+
+def test_model_health_route_returns_segment_rows(client, admin_headers, monkeypatch):
+    generated_at = datetime(2026, 3, 22, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "app.api.monitoring.analytics_service.build_model_health_summary",
+        lambda: {
+            "generated_at": generated_at,
+            "ensemble_version": "hybrid-ensemble-v1",
+            "segments": [
+                {
+                    "segment_key": "lotto-activo-hourly",
+                    "status": "champion",
+                    "champion_model_key": "model-123",
+                    "trained_at": generated_at,
+                    "training_start_date": "2026-01-01",
+                    "training_end_date": "2026-03-21",
+                    "validation_top_1_rate": 0.1,
+                    "validation_top_3_rate": 0.2,
+                    "validation_top_5_rate": 0.3,
+                    "baseline_top_3_rate": 0.18,
+                    "baseline_top_5_rate": 0.27,
+                    "calibration_method": "sigmoid",
+                    "confidence_bands": [
+                        {
+                            "confidence_band": "alta",
+                            "evaluated_draws": 10,
+                            "hit_top_1_rate": 0.2,
+                            "hit_top_3_rate": 0.4,
+                            "hit_top_5_rate": 0.6,
+                        }
+                    ],
+                    "notes": ["Champion vigente."],
+                }
+            ],
+            "notes": ["OK"],
+        },
+    )
+
+    response = client.get("/api/analytics/model-health", headers=admin_headers)
+
+    assert response.status_code == 200
+    assert response.json()["ensemble_version"] == "hybrid-ensemble-v1"
+    assert response.json()["segments"][0]["segment_key"] == "lotto-activo-hourly"
 
 
 def test_admin_background_backfill_status_routes(client, admin_headers, monkeypatch):

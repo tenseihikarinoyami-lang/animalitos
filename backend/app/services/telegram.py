@@ -143,7 +143,12 @@ class TelegramService:
         )
         return await self.send_message(message)
 
-    async def send_daily_summary(self, overview: dict, review_summary: dict | None = None) -> bool:
+    async def send_daily_summary(
+        self,
+        overview: dict,
+        review_summary: dict | None = None,
+        model_health: dict | None = None,
+    ) -> bool:
         cards = overview.get("primary_lotteries", [])
         lines = [
             "<b>Animalitos Monitor</b>",
@@ -191,6 +196,15 @@ class TelegramService:
                     f"({round(weakest_signal.get('hit_top_3_rate', 0) * 100, 1)}% top 3)"
                 )
 
+        if model_health:
+            lines.extend(["", "<b>Salud del modelo</b>"])
+            for segment in (model_health.get("segments") or [])[:4]:
+                lines.append(
+                    f"- <b>{html.escape(segment.get('segment_key', 'segmento'))}</b>: "
+                    f"Top 5 val {round(segment.get('validation_top_5_rate', 0) * 100, 1)}% | "
+                    f"banda alta {round(((segment.get('confidence_bands') or [{}])[0].get('hit_top_3_rate', 0)) * 100, 1)}% top 3"
+                )
+
         return await self.send_message("\n".join(lines))
 
     async def send_possible_results_summary(self, summary: dict) -> bool:
@@ -227,8 +241,10 @@ class TelegramService:
                 strongest_signal = max((candidate.get("score_breakdown") or {}).items(), key=lambda item: item[1], default=("n/a", 0))
                 lines.append(
                     f"- {candidate['animal_number']:02d} {html.escape(candidate['animal_name'])} | "
-                    f"score {candidate['score']:.2f} | slot {candidate.get('slot_hits', candidate.get('remaining_time_hits', 0))} | "
-                    f"coinc {candidate.get('coincidence_hits', 0)} | trans {candidate.get('transition_hits', 0)} | "
+                    f"ens {candidate.get('ensemble_score', 0):.3f} | "
+                    f"ml {candidate.get('model_probability', 0):.3f} | "
+                    f"regla {candidate.get('rule_score', 0):.2f} | "
+                    f"conf {html.escape(candidate.get('confidence_band', 'baja'))} | "
                     f"senal {html.escape(strongest_signal[0])}"
                 )
             lines.append("")
@@ -253,7 +269,10 @@ class TelegramService:
             for candidate in alert.get("candidates", [])[:3]:
                 lines.append(
                     f"- {candidate['animal_number']:02d} {html.escape(candidate['animal_name'])} | "
-                    f"score {candidate['score']:.2f} | top delta {candidate.get('rank_delta') or 0}"
+                    f"ens {candidate.get('ensemble_score', 0):.3f} | "
+                    f"ml {candidate.get('model_probability', 0):.3f} | "
+                    f"conf {html.escape(candidate.get('confidence_band', 'baja'))} | "
+                    f"top delta {candidate.get('rank_delta') or 0}"
                 )
             if alert.get("change_summary"):
                 lines.append(f"  Cambio: {html.escape(alert['change_summary'])}")

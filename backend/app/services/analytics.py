@@ -21,6 +21,9 @@ from app.models.schemas import (
     IngestionRun,
     LotteryOverviewCard,
     LotteryPossibleResults,
+    ModelHealthBandMetric,
+    ModelHealthSummary,
+    ModelSegmentHealth,
     PossibleResultCandidate,
     PossibleResultsSummary,
     PredictionReviewHourMetric,
@@ -40,6 +43,21 @@ from app.models.schemas import (
 )
 from app.services.database import db_service
 from app.services.external_signals import external_signals_service
+from app.services.prediction_models import (
+    EXTERNAL_COMPONENT_KEYS,
+    INTERNAL_COMPONENT_KEYS,
+    build_ensemble_score,
+    build_external_raw_prior,
+    build_rule_score,
+    build_segment_key,
+    compute_window_stability,
+    make_feature_payload,
+    normalize_external_priors,
+    normalize_window_values,
+    predict_segment_probabilities,
+    stable_probability_band,
+    train_segment_model,
+)
 from app.services.schedule import build_next_draw, expected_draws_by_now, local_now, parse_time_local, utc_now
 from app.services.telegram import telegram_service
 
@@ -141,12 +159,21 @@ SCORE_COMPONENTS = [
 
 
 class AnalyticsService:
-    METHODOLOGY_VERSION = "ops-intraday-ranking-v7"
+    METHODOLOGY_VERSION = "ops-hybrid-ranking-v8"
+    ENSEMBLE_VERSION = "hybrid-ensemble-v1"
     BASELINE_METHODOLOGY_VERSION = "frequency-baseline-v1"
     MINIMUM_BACKTEST_HISTORY = 10
     FULL_TOP_N = 10
     SLOT_CONTEXT_DEPTH = 4
     MARKET_CONTEXT_DEPTH = 6
+    MODEL_LOOKBACK_DAYS = 90
+    MINIMUM_MODEL_EXAMPLES = 300
+    SEGMENT_KEYS = [
+        "lotto-activo-hourly",
+        "la-granjita-hourly",
+        "internacional-hourly",
+        "internacional-halfhour",
+    ]
 
     @staticmethod
     def _coerce_datetime(value) -> datetime:
@@ -186,7 +213,9 @@ class AnalyticsService:
     @staticmethod
     def _candidate_sort_key(candidate: DrawPredictionCandidate):
         return (
-            candidate.score,
+            candidate.ensemble_score or candidate.score,
+            candidate.model_probability,
+            candidate.rule_score,
             candidate.strategy_weighted_hits,
             candidate.strategy_hits,
             candidate.enjaulado_days_without_hit,
@@ -536,6 +565,106 @@ class AnalyticsService:
 
         return counters
 
+    def _window_is_weak_sample(
+        self,
+        *,
+        historical_days: dict[str, list[dict]],
+        window_counters: dict[str, Counter],
+        target_draw_time: str,
+        lottery_name: str,
+    ) -> bool:
+        comparable_days = 0
+        for day_items in historical_days.values():
+            if any(item["draw_time_local"] == target_draw_time for item in day_items):
+                comparable_days += 1
+        slot_depth = sum(window_counters["slot_historical_90d"].values())
+        if lottery_name == "Lotto Activo Internacional" and target_draw_time.endswith(":30"):
+            return comparable_days < 18 or slot_depth < 18
+        return comparable_days < 24 or slot_depth < 24
+
+    def _apply_hybrid_scores(
+        self,
+        *,
+        candidates: list[DrawPredictionCandidate],
+        lottery_name: str,
+        target_draw_time: str,
+        reference_local: datetime,
+        daypart: str,
+        weak_sample: bool,
+    ) -> tuple[str, dict | None, float, str]:
+        if not candidates:
+            segment_key = build_segment_key(lottery_name, target_draw_time)
+            return segment_key, None, 0.0, "baja"
+
+        segment_key = build_segment_key(lottery_name, target_draw_time)
+        champion_model = db_service.get_champion_model(segment_key)
+        rule_scores = [build_rule_score(candidate.score_breakdown) for candidate in candidates]
+        external_raw_priors = [build_external_raw_prior(candidate.score_breakdown) for candidate in candidates]
+        normalized_rule_scores = normalize_window_values(rule_scores)
+        normalized_external_priors = normalize_external_priors(external_raw_priors, cap=1.0)
+        weekday = reference_local.weekday()
+        feature_rows = [
+            make_feature_payload(
+                candidate,
+                rule_score=rule_score,
+                external_prior=external_prior,
+                draw_time_local=target_draw_time,
+                weekday=weekday,
+                daypart=daypart,
+            )
+            for candidate, rule_score, external_prior in zip(
+                candidates,
+                rule_scores,
+                normalized_external_priors,
+                strict=False,
+            )
+        ]
+        probabilities = predict_segment_probabilities(champion_model, feature_rows)
+
+        for candidate, rule_score, external_prior, normalized_rule_score, model_probability in zip(
+            candidates,
+            rule_scores,
+            normalized_external_priors,
+            normalized_rule_scores,
+            probabilities,
+            strict=False,
+        ):
+            candidate.rule_score = round(rule_score, 2)
+            candidate.external_prior = round(external_prior, 4)
+            candidate.model_probability = round(model_probability, 4)
+            candidate.ensemble_score = build_ensemble_score(
+                model_probability=model_probability,
+                normalized_rule_score=normalized_rule_score,
+                external_prior=external_prior,
+            )
+            candidate.segment_key = segment_key
+            candidate.champion_model_key = champion_model.get("model_key") if champion_model else None
+            candidate.weak_sample = weak_sample
+            candidate.score = round(candidate.ensemble_score * 100, 2)
+
+        candidates.sort(key=self._candidate_sort_key, reverse=True)
+        comparison_index = min(4, len(candidates) - 1)
+        ensemble_gap = max(candidates[0].ensemble_score - candidates[comparison_index].ensemble_score, 0)
+        stability_score = compute_window_stability(
+            current_top_numbers=[candidate.animal_number for candidate in candidates[:3]],
+            previous_top_numbers=None,
+            ensemble_gap=ensemble_gap,
+            weak_sample=weak_sample,
+        )
+        confidence_band = stable_probability_band(
+            candidates[0].model_probability if candidates else 0.0,
+            stability_score,
+            weak_sample,
+        )
+        for candidate in candidates:
+            candidate.stability_score = stability_score
+            candidate.confidence_band = stable_probability_band(
+                candidate.model_probability,
+                stability_score,
+                weak_sample,
+            )
+        return segment_key, champion_model, stability_score, confidence_band
+
     def _build_draw_prediction_window(
         self,
         lottery_name: str,
@@ -587,6 +716,12 @@ class AnalyticsService:
             "strategy_adaptive": max(strategy_context.get("adaptive_scores", {}).values(), default=1),
             "enjaulado_pressure": strategy_context.get("enjaulado_max", 1) or 1,
         }
+        weak_sample = self._window_is_weak_sample(
+            historical_days=historical_days,
+            window_counters=window_counters,
+            target_draw_time=target_draw_time,
+            lottery_name=lottery_name,
+        )
 
         candidates: list[DrawPredictionCandidate] = []
         for animal_number, animal_name in self._all_animal_keys():
@@ -744,7 +879,14 @@ class AnalyticsService:
             candidate.strongest_signals = self._top_signal_details(candidate)
             candidates.append(candidate)
 
-        candidates.sort(key=self._candidate_sort_key, reverse=True)
+        segment_key, champion_model, stability_score, confidence_band = self._apply_hybrid_scores(
+            candidates=candidates,
+            lottery_name=lottery_name,
+            target_draw_time=target_draw_time,
+            reference_local=reference_local,
+            daypart=target_daypart,
+            weak_sample=weak_sample,
+        )
         minutes_until = None
         parsed = parse_time_local(target_draw_time)
         candidate_local = reference_local.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
@@ -756,7 +898,12 @@ class AnalyticsService:
             observed_prefix=observed_prefix,
             minutes_until=minutes_until,
             daypart=target_daypart,
-            candidates=candidates[: max(top_n, self.FULL_TOP_N)],
+            segment_key=segment_key,
+            stability_score=stability_score,
+            confidence_band=confidence_band,
+            champion_model_key=champion_model.get("model_key") if champion_model else None,
+            weak_sample=weak_sample,
+            candidates=candidates,
         )
 
     def _candidate_to_possible(self, candidate: DrawPredictionCandidate, seen_today: bool) -> PossibleResultCandidate:
@@ -764,6 +911,15 @@ class AnalyticsService:
             animal_number=candidate.animal_number,
             animal_name=candidate.animal_name,
             score=candidate.score,
+            rule_score=candidate.rule_score,
+            model_probability=candidate.model_probability,
+            external_prior=candidate.external_prior,
+            ensemble_score=candidate.ensemble_score,
+            confidence_band=candidate.confidence_band,
+            segment_key=candidate.segment_key,
+            stability_score=candidate.stability_score,
+            champion_model_key=candidate.champion_model_key,
+            weak_sample=candidate.weak_sample,
             overall_hits=candidate.overall_hits,
             recent_hits=candidate.recent_hits,
             remaining_time_hits=candidate.slot_hits,
@@ -844,6 +1000,35 @@ class AnalyticsService:
             for window in lottery.draw_predictions:
                 previous_window = previous_window_map.get((lottery.canonical_lottery_name, window.draw_time_local))
                 self._annotate_rank_deltas(window.candidates, previous_window.get("candidates") if previous_window else None)
+                comparison_index = min(4, len(window.candidates) - 1) if window.candidates else 0
+                ensemble_gap = (
+                    max(window.candidates[0].ensemble_score - window.candidates[comparison_index].ensemble_score, 0)
+                    if window.candidates
+                    else 0
+                )
+                stability_score = compute_window_stability(
+                    current_top_numbers=[candidate.animal_number for candidate in window.candidates[:3]],
+                    previous_top_numbers=[
+                        int(item.get("animal_number"))
+                        for item in (previous_window.get("candidates") if previous_window else [])[:3]
+                        if item.get("animal_number") is not None
+                    ],
+                    ensemble_gap=ensemble_gap,
+                    weak_sample=window.weak_sample,
+                )
+                window.stability_score = stability_score
+                window.confidence_band = stable_probability_band(
+                    window.candidates[0].model_probability if window.candidates else 0.0,
+                    stability_score,
+                    window.weak_sample,
+                )
+                for candidate in window.candidates:
+                    candidate.stability_score = stability_score
+                    candidate.confidence_band = stable_probability_band(
+                        candidate.model_probability,
+                        stability_score,
+                        candidate.weak_sample,
+                    )
                 if previous_window and previous_window.get("candidates") and window.candidates:
                     previous_top = previous_window["candidates"][0]["animal_number"]
                     current_top = window.candidates[0].animal_number
@@ -1127,6 +1312,297 @@ class AnalyticsService:
         ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return [animal_number for _score, animal_number in ranked[:top_n]]
 
+    def _build_training_examples(
+        self,
+        *,
+        days: int | None = None,
+        lotteries: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        days = days or self.MODEL_LOOKBACK_DAYS
+        selected_lotteries = self._normalize_lotteries(lotteries)
+        schedules = {item["canonical_lottery_name"]: item for item in db_service.get_schedules()}
+        now_local = local_now()
+        start_date = (now_local.date() - timedelta(days=days - 1)).isoformat()
+        end_date = now_local.date().isoformat()
+        results_by_lottery = {
+            lottery_name: db_service.get_results(
+                canonical_lottery_name=lottery_name,
+                start_date=start_date,
+                end_date=end_date,
+                limit=None,
+            )
+            for lottery_name in selected_lotteries
+        }
+        market_ordered = self._sort_results(
+            [item for lottery_name in selected_lotteries for item in results_by_lottery.get(lottery_name, [])]
+        )
+        examples: list[dict[str, Any]] = []
+
+        for lottery_name in selected_lotteries:
+            items = results_by_lottery.get(lottery_name, [])
+            ordered = self._sort_results(items)
+            schedule = schedules.get(lottery_name, {"times": []})
+            for index, actual in enumerate(ordered):
+                history = ordered[:index]
+                if len(history) < self.MINIMUM_BACKTEST_HISTORY:
+                    continue
+
+                draw_date_value = actual["draw_date"]
+                if isinstance(draw_date_value, str):
+                    draw_date_value = date.fromisoformat(draw_date_value)
+                reference_local = datetime.combine(
+                    draw_date_value,
+                    parse_time_local(actual["draw_time_local"]),
+                    tzinfo=local_now().tzinfo,
+                )
+                actual_dt = self._coerce_datetime(actual["draw_datetime_utc"])
+                market_history = [
+                    item for item in market_ordered if self._coerce_datetime(item["draw_datetime_utc"]) < actual_dt
+                ]
+                candidate_summary = self._build_candidates_for_reference(
+                    lottery_name=lottery_name,
+                    results=history,
+                    schedule=schedule,
+                    reference_local=reference_local,
+                    top_n=self.FULL_TOP_N,
+                    market_results=market_history,
+                )
+                if not candidate_summary:
+                    continue
+
+                target_window = next(
+                    (
+                        window
+                        for window in candidate_summary.draw_predictions
+                        if window.draw_time_local == actual["draw_time_local"]
+                    ),
+                    None,
+                )
+                if not target_window:
+                    continue
+
+                window_key = f"{draw_date_value.isoformat()}:{lottery_name}:{actual['draw_time_local']}"
+                daypart = target_window.daypart or self._daypart_for_time(actual["draw_time_local"])
+                weekday = reference_local.weekday()
+                for candidate in target_window.candidates:
+                    feature_payload = make_feature_payload(
+                        candidate,
+                        rule_score=candidate.rule_score,
+                        external_prior=candidate.external_prior,
+                        draw_time_local=actual["draw_time_local"],
+                        weekday=weekday,
+                        daypart=daypart,
+                    )
+                    examples.append(
+                        {
+                            "example_key": (
+                                f"{draw_date_value.isoformat()}:{lottery_name}:{actual['draw_time_local']}:"
+                                f"{candidate.animal_number:02d}"
+                            ),
+                            "segment_key": candidate.segment_key or build_segment_key(lottery_name, actual["draw_time_local"]),
+                            "canonical_lottery_name": lottery_name,
+                            "draw_date": draw_date_value,
+                            "draw_time_local": actual["draw_time_local"],
+                            "animal_number": candidate.animal_number,
+                            "label_hit": candidate.animal_number == int(actual["animal_number"]),
+                            "methodology_version": self.METHODOLOGY_VERSION,
+                            "generated_at": utc_now(),
+                            "features": feature_payload,
+                            "metadata": {
+                                "window_key": window_key,
+                                "actual_animal_number": int(actual["animal_number"]),
+                                "actual_animal_name": actual["animal_name"],
+                                "champion_model_key": candidate.champion_model_key,
+                                "confidence_band": candidate.confidence_band,
+                                "stability_score": candidate.stability_score,
+                                "weak_sample": candidate.weak_sample,
+                            },
+                        }
+                    )
+
+        return examples
+
+    def _promotion_gate_notes(
+        self,
+        *,
+        segment_key: str,
+        candidate_metrics: dict[str, Any],
+        champion_metrics: dict[str, Any] | None,
+    ) -> tuple[bool, list[str]]:
+        if not champion_metrics:
+            return True, ["Primer champion disponible para el segmento."]
+
+        candidate_top5 = float(candidate_metrics.get("validation_top_5_rate", 0.0))
+        candidate_top3 = float(candidate_metrics.get("validation_top_3_rate", 0.0))
+        champion_top5 = float(champion_metrics.get("validation_top_5_rate", 0.0))
+        champion_top3 = float(champion_metrics.get("validation_top_3_rate", 0.0))
+        gain_top5 = round(candidate_top5 - champion_top5, 4)
+        delta_top3 = round(candidate_top3 - champion_top3, 4)
+        notes = [
+            f"Top 5 candidato {candidate_top5 * 100:.1f}% vs champion {champion_top5 * 100:.1f}% (delta {gain_top5 * 100:+.1f} pts).",
+            f"Top 3 candidato {candidate_top3 * 100:.1f}% vs champion {champion_top3 * 100:.1f}% (delta {delta_top3 * 100:+.1f} pts).",
+        ]
+        if gain_top5 < 0.02:
+            notes.append("No se promociona porque no supera el umbral minimo de +2 pts en Top 5.")
+            return False, notes
+        if delta_top3 < -0.01:
+            notes.append("No se promociona porque Top 3 cae mas de 1 punto absoluto.")
+            return False, notes
+        if segment_key.startswith("internacional") and gain_top5 <= 0 and delta_top3 <= 0:
+            notes.append("No se promociona porque el segmento internacional no mejora ni Top 5 ni Top 3.")
+            return False, notes
+        notes.append("El candidato cumple las compuertas minimas de promocion.")
+        return True, notes
+
+    def train_models_and_promote(self, days: int | None = None) -> dict[str, dict[str, Any]]:
+        examples = self._build_training_examples(days=days or self.MODEL_LOOKBACK_DAYS)
+        db_service.save_model_training_examples(examples)
+        grouped_examples: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for example in examples:
+            grouped_examples[example["segment_key"]].append(example)
+
+        training_summary: dict[str, dict[str, Any]] = {}
+        trained_at = utc_now()
+        for segment_key in self.SEGMENT_KEYS:
+            segment_examples = grouped_examples.get(segment_key, [])
+            if len(segment_examples) < self.MINIMUM_MODEL_EXAMPLES:
+                training_summary[segment_key] = {
+                    "status": "insufficient-data",
+                    "examples": len(segment_examples),
+                    "promoted": False,
+                }
+                continue
+
+            trained = train_segment_model(segment_key, segment_examples)
+            if not trained:
+                training_summary[segment_key] = {
+                    "status": "training-failed",
+                    "examples": len(segment_examples),
+                    "promoted": False,
+                }
+                continue
+
+            champion = db_service.get_champion_model(segment_key)
+            champion_metrics = (champion or {}).get("validation_metrics") or {}
+            should_promote, notes = self._promotion_gate_notes(
+                segment_key=segment_key,
+                candidate_metrics=trained.get("validation_metrics", {}),
+                champion_metrics=champion_metrics if champion else None,
+            )
+            model_payload = {
+                "model_key": f"{self.ENSEMBLE_VERSION}:{segment_key}:{trained_at.strftime('%Y%m%d%H%M%S')}",
+                "segment_key": segment_key,
+                "status": "champion" if should_promote else "candidate",
+                "trained_at": trained_at,
+                "training_start_date": trained.get("training_start_date"),
+                "training_end_date": trained.get("training_end_date"),
+                "ensemble_weights": {"model_probability": 0.6, "rule_score": 0.3, "external_prior": 0.1},
+                "validation_metrics": trained.get("validation_metrics", {}),
+                "calibration_method": trained.get("calibration_method"),
+                "artifact": trained.get("artifact", {}),
+                "notes": notes,
+            }
+
+            if should_promote and champion:
+                archived = dict(champion)
+                archived["status"] = "archived"
+                archived["notes"] = list((archived.get("notes") or [])) + [
+                    f"Archivado al promover {model_payload['model_key']}."
+                ]
+                db_service.save_model_version(archived)
+
+            db_service.save_model_version(model_payload)
+            training_summary[segment_key] = {
+                "status": model_payload["status"],
+                "examples": len(segment_examples),
+                "promoted": should_promote,
+                "model_key": model_payload["model_key"],
+                "validation_metrics": model_payload["validation_metrics"],
+            }
+
+        return training_summary
+
+    def ensure_champion_models(self) -> dict[str, dict[str, Any]]:
+        missing_segments = [segment_key for segment_key in self.SEGMENT_KEYS if not db_service.get_champion_model(segment_key)]
+        if not missing_segments:
+            return {
+                segment_key: {
+                    "status": "ready",
+                    "model_key": (db_service.get_champion_model(segment_key) or {}).get("model_key"),
+                }
+                for segment_key in self.SEGMENT_KEYS
+            }
+        return self.train_models_and_promote()
+
+    def _confidence_bands_from_reviews(self, segment_key: str, reviews: list[dict[str, Any]]) -> list[ModelHealthBandMetric]:
+        rows = []
+        grouped = defaultdict(list)
+        for review in reviews:
+            grouped[review.get("confidence_band") or "baja"].append(review)
+        for band in ("alta", "media", "baja"):
+            items = grouped.get(band, [])
+            total = len(items)
+            rows.append(
+                ModelHealthBandMetric(
+                    confidence_band=band,
+                    evaluated_draws=total,
+                    hit_top_1_rate=round(sum(1 for item in items if item.get("hit_top_1")) / total, 4) if total else 0,
+                    hit_top_3_rate=round(sum(1 for item in items if item.get("hit_top_3")) / total, 4) if total else 0,
+                    hit_top_5_rate=round(sum(1 for item in items if item.get("hit_top_5")) / total, 4) if total else 0,
+                )
+            )
+        return rows
+
+    def build_model_health_summary(self) -> ModelHealthSummary:
+        start_date = (local_now().date() - timedelta(days=30)).isoformat()
+        review_rows = db_service.get_prediction_window_reviews(start_date=start_date, limit=None)
+        segments = []
+        for segment_key in self.SEGMENT_KEYS:
+            champion = db_service.get_champion_model(segment_key)
+            segment_reviews = [row for row in review_rows if row.get("segment_key") == segment_key]
+            confidence_bands = self._confidence_bands_from_reviews(segment_key, segment_reviews)
+            if champion:
+                metrics = champion.get("validation_metrics", {})
+                notes = list(champion.get("notes") or [])
+                segments.append(
+                    ModelSegmentHealth(
+                        segment_key=segment_key,
+                        status=champion.get("status", "champion"),
+                        champion_model_key=champion.get("model_key"),
+                        trained_at=champion.get("trained_at"),
+                        training_start_date=champion.get("training_start_date"),
+                        training_end_date=champion.get("training_end_date"),
+                        validation_top_1_rate=metrics.get("validation_top_1_rate", 0),
+                        validation_top_3_rate=metrics.get("validation_top_3_rate", 0),
+                        validation_top_5_rate=metrics.get("validation_top_5_rate", 0),
+                        baseline_top_3_rate=metrics.get("baseline_top_3_rate", 0),
+                        baseline_top_5_rate=metrics.get("baseline_top_5_rate", 0),
+                        calibration_method=champion.get("calibration_method"),
+                        confidence_bands=confidence_bands,
+                        notes=notes[:4],
+                    )
+                )
+            else:
+                segments.append(
+                    ModelSegmentHealth(
+                        segment_key=segment_key,
+                        status="missing",
+                        confidence_bands=confidence_bands,
+                        notes=["Aun no hay champion persistido para este segmento."],
+                    )
+                )
+
+        notes = [
+            "La capa ML reordena con HistGradientBoosting por segmento y calibracion temporal.",
+            "Las bandas de confianza se calculan contra reviews reales del ultimo mes cuando existen.",
+        ]
+        return ModelHealthSummary(
+            generated_at=utc_now(),
+            ensemble_version=self.ENSEMBLE_VERSION,
+            segments=segments,
+            notes=notes,
+        )
+
     def build_dashboard_overview(self) -> DashboardOverview:
         now_local = local_now()
         today_str = now_local.date().isoformat()
@@ -1275,8 +1751,14 @@ class AnalyticsService:
         requested_top_n = top_n or settings.prediction_default_top_n
         full_top_n = max(requested_top_n, self.FULL_TOP_N)
         reference_local = reference_local or local_now()
+        self.ensure_daily_external_snapshots(target_date=reference_local.date(), force_refresh=False)
+        self.ensure_champion_models()
         schedules = {item["canonical_lottery_name"]: item for item in db_service.get_schedules()}
         selected_lotteries = self._normalize_lotteries(lotteries)
+        champion_versions = {
+            segment_key: (db_service.get_champion_model(segment_key) or {}).get("model_key")
+            for segment_key in self.SEGMENT_KEYS
+        }
         results_by_lottery = {
             lottery_name: db_service.get_results(canonical_lottery_name=lottery_name, limit=None)
             for lottery_name in selected_lotteries
@@ -1313,18 +1795,18 @@ class AnalyticsService:
             reference_date=reference_local.date(),
             reference_time_local=reference_local.strftime("%H:%M"),
             methodology_version=self.METHODOLOGY_VERSION,
+            ensemble_version=self.ENSEMBLE_VERSION,
             methodology=(
-                "Ranking intradia por loteria, hora, dia de semana y tramo del dia. "
-                "Combina ventanas historicas de 7, 14, 30 y 90 dias con recurrencia de la misma hora, "
-                "transiciones entre sorteos, contexto de parejas y trios previos, coincidencias del patron observado hoy, "
-                "contexto cruzado de otras loterias, patrones de repeticion intradia y rezago desde la ultima aparicion. "
-                "La version actual recalibra pesos para dar mas estabilidad a frecuencia por hora, dia y rezago, y menos "
-                "peso a coincidencias exactas muy fragiles."
+                "Motor hibrido explicable por segmento. El score final combina una capa estadistica interpretable "
+                "(frecuencia por hora, dia, transiciones, contexto y rezago), una probabilidad supervisada calibrada "
+                "con HistGradientBoosting por segmento y un prior externo controlado para estrategias/enjaulados. "
+                "Internacional separa ventanas :00 y :30 para evitar mezclar patrones incompatibles."
             ),
             disclaimer="Proyeccion estadistica operativa. No garantiza aciertos ni reemplaza criterio propio.",
             baseline_methodology_version=self.BASELINE_METHODOLOGY_VERSION,
             history_days_covered=len(unique_dates),
             history_results_considered=total_history_results,
+            model_version_by_segment=champion_versions,
             score_components=list(SCORE_COMPONENTS),
             last_backfill_at=latest_backfill.get("completed_at") if latest_backfill else None,
             lotteries=summary_items,
@@ -1334,6 +1816,19 @@ class AnalyticsService:
             latest_prediction = db_service.get_latest_prediction_run()
             previous_summary = latest_prediction.get("summary") if latest_prediction else None
         self._apply_change_tracking(summary, previous_summary)
+        all_windows = [window for lottery in summary.lotteries for window in lottery.draw_predictions]
+        stability_counts = Counter(window.confidence_band for window in all_windows)
+        summary.prediction_stability = {
+            "high_confidence_windows": stability_counts.get("alta", 0),
+            "medium_confidence_windows": stability_counts.get("media", 0),
+            "low_confidence_windows": stability_counts.get("baja", 0),
+            "average_stability_score": round(
+                sum(window.stability_score for window in all_windows) / len(all_windows),
+                4,
+            )
+            if all_windows
+            else 0,
+        }
         return summary
 
     def build_backtesting_summary(
@@ -1344,6 +1839,7 @@ class AnalyticsService:
     ) -> BacktestingSummary:
         days = days or settings.analytics_default_days
         top_n = max(top_n or settings.prediction_default_top_n, 5)
+        self.ensure_champion_models()
         selected_lotteries = self._normalize_lotteries(lotteries)
         schedules = {item["canonical_lottery_name"]: item for item in db_service.get_schedules()}
         now_local = local_now()
@@ -1620,8 +2116,37 @@ class AnalyticsService:
         target_date = target_date or local_now().date()
         return f"{prefix}:{target_date.isoformat()}"
 
-    def _load_enjaulados_data(self, force_refresh: bool = False) -> EnjauladosResponse:
-        snapshot_key = self._daily_external_snapshot_key("external-enjaulados")
+    def _frozen_external_snapshot_key(self, prefix: str, target_date: date | None = None) -> str:
+        target_date = target_date or local_now().date()
+        return f"frozen-{prefix}:{target_date.isoformat()}"
+
+    def ensure_daily_external_snapshots(self, target_date: date | None = None, force_refresh: bool = False) -> None:
+        target_date = target_date or local_now().date()
+        if target_date != local_now().date() and not force_refresh:
+            return
+        enjaulados = self._load_enjaulados_data(force_refresh=force_refresh, target_date=target_date)
+        strategies = self._load_strategy_sources(force_refresh=force_refresh, target_date=target_date)
+        db_service.save_analytics_snapshot(
+            snapshot_key=self._frozen_external_snapshot_key("external-enjaulados", target_date),
+            snapshot=enjaulados.model_dump(),
+        )
+        db_service.save_analytics_snapshot(
+            snapshot_key=self._frozen_external_snapshot_key("external-strategies", target_date),
+            snapshot={"generated_at": utc_now(), "sources": strategies},
+        )
+
+    def _load_enjaulados_data(
+        self,
+        force_refresh: bool = False,
+        target_date: date | None = None,
+        frozen: bool = False,
+    ) -> EnjauladosResponse:
+        target_date = target_date or local_now().date()
+        snapshot_key = (
+            self._frozen_external_snapshot_key("external-enjaulados", target_date)
+            if frozen
+            else self._daily_external_snapshot_key("external-enjaulados", target_date)
+        )
         if not force_refresh:
             snapshot = db_service.get_analytics_snapshot(snapshot_key)
             if snapshot:
@@ -1629,16 +2154,29 @@ class AnalyticsService:
 
         try:
             payload = external_signals_service.get_enjaulados(force_refresh=force_refresh)
-            db_service.save_analytics_snapshot(snapshot_key=snapshot_key, snapshot=payload.model_dump())
+            if not frozen:
+                db_service.save_analytics_snapshot(snapshot_key=snapshot_key, snapshot=payload.model_dump())
             return payload
         except Exception:
-            latest_snapshot = db_service.get_latest_analytics_snapshot("external-enjaulados:")
+            latest_snapshot = db_service.get_latest_analytics_snapshot(
+                "frozen-external-enjaulados:" if frozen else "external-enjaulados:"
+            )
             if latest_snapshot:
                 return EnjauladosResponse.model_validate(latest_snapshot)
             return EnjauladosResponse(generated_at=utc_now(), lotteries=[])
 
-    def _load_strategy_sources(self, force_refresh: bool = False) -> list:
-        snapshot_key = self._daily_external_snapshot_key("external-strategies")
+    def _load_strategy_sources(
+        self,
+        force_refresh: bool = False,
+        target_date: date | None = None,
+        frozen: bool = False,
+    ) -> list:
+        target_date = target_date or local_now().date()
+        snapshot_key = (
+            self._frozen_external_snapshot_key("external-strategies", target_date)
+            if frozen
+            else self._daily_external_snapshot_key("external-strategies", target_date)
+        )
         if not force_refresh:
             snapshot = db_service.get_analytics_snapshot(snapshot_key)
             if snapshot:
@@ -1646,26 +2184,50 @@ class AnalyticsService:
 
         try:
             payload = external_signals_service.get_strategy_sources(force_refresh=force_refresh)
-            db_service.save_analytics_snapshot(
-                snapshot_key=snapshot_key,
-                snapshot={
-                    "generated_at": utc_now(),
-                    "sources": [item.model_dump() for item in payload],
-                },
-            )
+            if not frozen:
+                db_service.save_analytics_snapshot(
+                    snapshot_key=snapshot_key,
+                    snapshot={
+                        "generated_at": utc_now(),
+                        "sources": [item.model_dump() for item in payload],
+                    },
+                )
             return [item.model_dump() for item in payload]
         except Exception:
-            latest_snapshot = db_service.get_latest_analytics_snapshot("external-strategies:")
+            latest_snapshot = db_service.get_latest_analytics_snapshot(
+                "frozen-external-strategies:" if frozen else "external-strategies:"
+            )
             if latest_snapshot:
                 return latest_snapshot.get("sources", [])
             return []
 
     def build_enjaulados_summary(self, force_refresh: bool = False) -> EnjauladosResponse:
-        return self._load_enjaulados_data(force_refresh=force_refresh)
+        today = local_now().date()
+        self.ensure_daily_external_snapshots(target_date=today, force_refresh=force_refresh)
+        return self._load_enjaulados_data(force_refresh=False, target_date=today, frozen=not force_refresh)
 
     def refresh_external_signal_snapshots(self) -> None:
-        self._load_enjaulados_data(force_refresh=True)
-        self._load_strategy_sources(force_refresh=True)
+        target_date = local_now().date()
+        enjaulados = external_signals_service.get_enjaulados(force_refresh=True)
+        strategies = external_signals_service.get_strategy_sources(force_refresh=True)
+        enjaulados_payload = enjaulados.model_dump()
+        strategies_payload = {"generated_at": utc_now(), "sources": [item.model_dump() for item in strategies]}
+        db_service.save_analytics_snapshot(
+            snapshot_key=self._daily_external_snapshot_key("external-enjaulados", target_date),
+            snapshot=enjaulados_payload,
+        )
+        db_service.save_analytics_snapshot(
+            snapshot_key=self._daily_external_snapshot_key("external-strategies", target_date),
+            snapshot=strategies_payload,
+        )
+        db_service.save_analytics_snapshot(
+            snapshot_key=self._frozen_external_snapshot_key("external-enjaulados", target_date),
+            snapshot=enjaulados_payload,
+        )
+        db_service.save_analytics_snapshot(
+            snapshot_key=self._frozen_external_snapshot_key("external-strategies", target_date),
+            snapshot=strategies_payload,
+        )
 
     def _coerce_local_draw_datetime(self, draw_date_value, draw_time_local: str) -> datetime:
         draw_date = draw_date_value
@@ -1694,6 +2256,7 @@ class AnalyticsService:
         valid_runs.sort(key=lambda item: item[0])
 
         windows = []
+        persisted_reviews = []
         totals = {"evaluated": 0, "top1": 0, "top3": 0, "top5": 0}
         by_lottery = {}
         by_hour = {}
@@ -1744,6 +2307,10 @@ class AnalyticsService:
             predicted_top_candidate = candidate_rows[0] if candidate_rows else {}
             predicted_top_1_number = predicted_top_candidate.get("animal_number")
             predicted_top_1_name = predicted_top_candidate.get("animal_name")
+            champion_model_key = predicted_top_candidate.get("champion_model_key") or matched_window.get("champion_model_key")
+            confidence_band = predicted_top_candidate.get("confidence_band") or matched_window.get("confidence_band")
+            stability_score = predicted_top_candidate.get("stability_score") or matched_window.get("stability_score")
+            segment_key = predicted_top_candidate.get("segment_key") or matched_window.get("segment_key")
             lead_signal_key = None
             lead_signal_label = None
             strongest_signals = predicted_top_candidate.get("strongest_signals") or []
@@ -1764,10 +2331,14 @@ class AnalyticsService:
                 canonical_lottery_name=lottery_name,
                 draw_date=draw_date,
                 draw_time_local=draw_time_local,
+                segment_key=segment_key,
                 actual_animal_number=actual_number,
                 actual_animal_name=result["animal_name"],
                 predicted_at=matched_run.get("generated_at"),
                 prediction_delivery_status=matched_run.get("delivery_status"),
+                champion_model_key=champion_model_key,
+                confidence_band=confidence_band,
+                stability_score=stability_score,
                 predicted_top_1_number=predicted_top_1_number,
                 predicted_top_1_name=predicted_top_1_name,
                 lead_signal_key=lead_signal_key,
@@ -1782,6 +2353,34 @@ class AnalyticsService:
                 prediction_available=True,
             )
             windows.append(window_row)
+            persisted_reviews.append(
+                {
+                    "review_key": f"{draw_date.isoformat()}:{lottery_name}:{draw_time_local}",
+                    "segment_key": segment_key or build_segment_key(lottery_name, draw_time_local),
+                    "canonical_lottery_name": lottery_name,
+                    "draw_date": draw_date,
+                    "draw_time_local": draw_time_local,
+                    "actual_animal_number": actual_number,
+                    "actual_animal_name": result["animal_name"],
+                    "predicted_at": matched_run.get("generated_at"),
+                    "model_key": champion_model_key,
+                    "ensemble_version": self.ENSEMBLE_VERSION,
+                    "lead_signal_key": lead_signal_key,
+                    "confidence_band": confidence_band,
+                    "stability_score": stability_score,
+                    "hit_top_1": hit_top_1,
+                    "hit_top_3": hit_top_3,
+                    "hit_top_5": hit_top_5,
+                    "payload": {
+                        "predicted_top_1_number": predicted_top_1_number,
+                        "predicted_top_1_name": predicted_top_1_name,
+                        "top_1": top_1,
+                        "top_3": top_3,
+                        "top_5": top_5,
+                        "actual_rank": actual_rank,
+                    },
+                }
+            )
 
             totals["evaluated"] += 1
             totals["top1"] += int(hit_top_1)
@@ -1910,6 +2509,7 @@ class AnalyticsService:
             notes.append(
                 f"La senal lider mas floja hoy fue {weakest_signals[0].signal_label} con Top 3 de {round(weakest_signals[0].hit_top_3_rate * 100, 1)}%."
             )
+        db_service.save_prediction_window_reviews(persisted_reviews)
 
         return PredictionReviewSummary(
             generated_at=utc_now(),
@@ -1934,8 +2534,10 @@ class AnalyticsService:
         )
 
     def _build_external_strategy_context(self, reference_local: datetime) -> dict[str, Any]:
-        strategy_sources = self._load_strategy_sources(force_refresh=False)
-        enjaulados = self._load_enjaulados_data(force_refresh=False)
+        target_date = reference_local.date()
+        self.ensure_daily_external_snapshots(target_date=target_date, force_refresh=False)
+        strategy_sources = self._load_strategy_sources(force_refresh=False, target_date=target_date, frozen=True)
+        enjaulados = self._load_enjaulados_data(force_refresh=False, target_date=target_date, frozen=True)
         today_key = reference_local.date().isoformat()
         today_results = [
             item
@@ -1955,7 +2557,7 @@ class AnalyticsService:
             else:
                 hit_count = 0
                 hit_rate = 0
-            source_weight = 1.0 + hit_rate
+            source_weight = 0.0 if hit_rate < 0.08 else min(0.5 + hit_rate, 1.5)
             adaptive_weights[source.get("key")] = source_weight
             for animal in animals:
                 key = (int(animal.get("animal_number")), animal.get("animal_name") or get_animal_name(int(animal.get("animal_number"))))
@@ -1981,8 +2583,13 @@ class AnalyticsService:
         }
 
     def build_strategies_summary(self, force_refresh: bool = False) -> StrategiesResponse:
-        strategies = self._load_strategy_sources(force_refresh=force_refresh)
         today = local_now().date()
+        self.ensure_daily_external_snapshots(target_date=today, force_refresh=force_refresh)
+        strategies = self._load_strategy_sources(
+            force_refresh=False,
+            target_date=today,
+            frozen=not force_refresh,
+        )
         today_results = [
             item
             for item in db_service.get_results(start_date=today.isoformat(), end_date=today.isoformat(), limit=None)

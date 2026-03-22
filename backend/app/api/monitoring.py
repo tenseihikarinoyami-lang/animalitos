@@ -9,6 +9,7 @@ from app.models.schemas import (
     BacktestingSummary,
     DashboardOverview,
     EnjauladosResponse,
+    ModelHealthSummary,
     PossibleResultsSummary,
     PredictionReviewSummary,
     ResultQueryResponse,
@@ -208,6 +209,11 @@ async def get_backtesting(
         if snapshot:
             return snapshot
         raise
+
+
+@router.get("/analytics/model-health", response_model=ModelHealthSummary)
+async def get_model_health(current_user: dict = Depends(get_current_user)):
+    return analytics_service.build_model_health_summary()
 
 
 @router.get("/analytics/enjaulados", response_model=EnjauladosResponse)

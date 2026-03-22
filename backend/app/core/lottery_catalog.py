@@ -13,6 +13,15 @@ def build_hourly_times(start_hour: int, end_hour: int) -> list[str]:
     return [f"{hour:02d}:00" for hour in range(start_hour, end_hour + 1)]
 
 
+def build_internacional_times() -> list[str]:
+    times = []
+    for hour in range(8, 20):
+        times.append(f"{hour:02d}:00")
+        times.append(f"{hour:02d}:30")
+    times.extend(["20:00", "21:00"])
+    return times
+
+
 DEFAULT_DRAW_SCHEDULES = [
     {
         "canonical_lottery_name": "Lotto Activo",
@@ -31,7 +40,7 @@ DEFAULT_DRAW_SCHEDULES = [
     {
         "canonical_lottery_name": "Lotto Activo Internacional",
         "display_name": "Lotto Activo Internacional",
-        "times": build_hourly_times(8, 21),
+        "times": build_internacional_times(),
         "source_pages": ["internacional"],
         "status": "active",
     },

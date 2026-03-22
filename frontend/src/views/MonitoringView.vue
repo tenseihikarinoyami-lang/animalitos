@@ -158,9 +158,9 @@
                       {{ candidate.movement_summary || `Movimiento ${formatDelta(candidate.rank_delta)} | score ${formatScoreDelta(candidate.score_delta)}` }}
                     </p>
                     <p>
-                      coincid {{ candidate.coincidence_hits }} | trans {{ candidate.transition_hits }} |
-                      pareja {{ candidate.pair_context_hits }} | trio {{ candidate.trio_context_hits }} |
-                      overdue {{ candidate.draws_since_last_seen }}
+                      ens {{ candidate.ensemble_score?.toFixed(3) || '0.000' }} | ml {{ candidate.model_probability?.toFixed(3) || '0.000' }} |
+                      regla {{ candidate.rule_score?.toFixed(2) || '0.00' }} | prior {{ candidate.external_prior?.toFixed(3) || '0.000' }} |
+                      conf {{ candidate.confidence_band || 'baja' }} | estabilidad {{ candidate.stability_score?.toFixed(2) || '0.00' }}
                     </p>
                     <div class="signal-chip-row">
                       <span
@@ -187,6 +187,7 @@
                   </div>
                   <div class="candidate-side">
                     <span class="score-chip">{{ candidate.score.toFixed(2) }}</span>
+                    <span class="pill">{{ candidate.segment_key || 'segmento' }}</span>
                     <span class="movement-pill" :class="movementTone(candidate.rank_delta, candidate.score_delta)">
                       Δ {{ formatDelta(candidate.rank_delta) }} | {{ formatScoreDelta(candidate.score_delta) }}
                     </span>

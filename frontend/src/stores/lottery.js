@@ -16,6 +16,7 @@ export const useLotteryStore = defineStore('lottery', () => {
   const qualityReport = ref(null)
   const auditLogs = ref([])
   const backtesting = ref(null)
+  const modelHealth = ref(null)
   const backfillStatus = ref(null)
   const users = ref([])
   const loading = ref(false)
@@ -198,6 +199,14 @@ export const useLotteryStore = defineStore('lottery', () => {
     }, options)
   }
 
+  async function fetchModelHealth(options = {}) {
+    return withLoader(async () => {
+      const response = await api.get('/analytics/model-health')
+      modelHealth.value = response.data
+      return response.data
+    }, options)
+  }
+
   async function fetchUsers() {
     return withLoader(async () => {
       const response = await api.get('/admin/users')
@@ -266,6 +275,7 @@ export const useLotteryStore = defineStore('lottery', () => {
     qualityReport,
     auditLogs,
     backtesting,
+    modelHealth,
     backfillStatus,
     users,
     loading,
@@ -284,6 +294,7 @@ export const useLotteryStore = defineStore('lottery', () => {
     fetchQualityReport,
     fetchAuditLogs,
     fetchBacktesting,
+    fetchModelHealth,
     fetchBackfillStatus,
     fetchUsers,
     refreshResults,
