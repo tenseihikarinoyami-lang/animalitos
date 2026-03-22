@@ -12,6 +12,7 @@ export const useLotteryStore = defineStore('lottery', () => {
   const enjaulados = ref(null)
   const strategies = ref(null)
   const todayReview = ref(null)
+  const todayAnalysis = ref(null)
   const systemStatus = ref(null)
   const qualityReport = ref(null)
   const auditLogs = ref([])
@@ -123,6 +124,14 @@ export const useLotteryStore = defineStore('lottery', () => {
     return withLoader(async () => {
       const response = await api.get('/analytics/today-review', { params })
       todayReview.value = response.data
+      return response.data
+    }, options)
+  }
+
+  async function fetchTodayAnalysis(params = {}, options = {}) {
+    return withLoader(async () => {
+      const response = await api.get('/analytics/today-analysis', { params })
+      todayAnalysis.value = response.data
       return response.data
     }, options)
   }
@@ -271,6 +280,7 @@ export const useLotteryStore = defineStore('lottery', () => {
     enjaulados,
     strategies,
     todayReview,
+    todayAnalysis,
     systemStatus,
     qualityReport,
     auditLogs,
@@ -290,6 +300,7 @@ export const useLotteryStore = defineStore('lottery', () => {
     fetchEnjaulados,
     fetchStrategies,
     fetchTodayReview,
+    fetchTodayAnalysis,
     fetchSystemStatus,
     fetchQualityReport,
     fetchAuditLogs,

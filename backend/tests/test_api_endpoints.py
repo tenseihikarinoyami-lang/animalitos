@@ -158,6 +158,7 @@ def test_admin_quality_status_audit_and_backtesting_routes(client, admin_headers
     assert backtesting_response.status_code == 200
     assert quality_response.json()["items"]
     assert "total_results" in status_response.json()
+    assert "database_connected" in status_response.json()
     assert "scheduler_mode" in status_response.json()
     assert "scheduler_last_received_at" in status_response.json()
     assert audit_response.json()[0]["action"] == "results_refresh"
@@ -464,6 +465,82 @@ def test_enjaulados_strategies_and_today_review_routes(client, admin_headers, mo
     assert enjaulados_response.json()["lotteries"][0]["items"][0]["animal_number"] == 17
     assert strategies_response.json()["sources"][0]["title"] == "La Bola de Cristal"
     assert review_response.json()["hit_top_5"] == 2
+
+
+def test_today_analysis_route_returns_operational_snapshot(client, admin_headers, monkeypatch):
+    generated_at = datetime(2026, 3, 22, tzinfo=timezone.utc)
+
+    async def fake_build_today_analysis(force_refresh=False):
+        return {
+            "generated_at": generated_at,
+            "draw_date": "2026-03-22",
+            "day_regime": "volatil",
+            "observed_results": [
+                {
+                    "canonical_lottery_name": "Lotto Activo",
+                    "draw_time_local": "08:00",
+                    "animal_number": 24,
+                    "animal_name": "Iguana",
+                    "source_url": "https://example.com",
+                    "source_page": "animalitos",
+                }
+            ],
+            "system_hits_top1_top3_top5_so_far": {
+                "evaluated_draws": 2,
+                "hit_top_1": 0,
+                "hit_top_3": 1,
+                "hit_top_5": 1,
+                "hit_top_1_rate": 0,
+                "hit_top_3_rate": 0.5,
+                "hit_top_5_rate": 0.5,
+            },
+            "strategy_performance_today": [
+                {
+                    "key": "el-mago-de-los-numeros",
+                    "title": "El Mago de los Numeros",
+                    "hit_count_today": 2,
+                    "evaluated_results_today": 6,
+                    "hit_rate_today": 0.3333,
+                    "matching_animals_today": [{"animal_number": 1, "animal_name": "Carnero"}],
+                    "overlap_with_system_top5": ["Lotto Activo: 01, 17"],
+                }
+            ],
+            "forecast_by_lottery": [
+                {
+                    "canonical_lottery_name": "Lotto Activo",
+                    "next_draw_time_local": "10:00",
+                    "remaining_draws_today": 10,
+                    "candidates": [
+                        {
+                            "animal_number": 17,
+                            "animal_name": "Pavo",
+                            "score": 0.81,
+                            "signal_leader": "enjaulado_pressure",
+                            "confidence_band": "alta",
+                            "enjaulado_days_without_hit": 13,
+                            "strategy_mentions": 2,
+                            "strategy_hit_rate": 0.66,
+                            "rationale": "Lidera por enjaulado pressure",
+                        }
+                    ],
+                }
+            ],
+            "notes": ["La jornada sigue volatil."],
+        }
+
+    monkeypatch.setattr(
+        "app.api.monitoring.monitoring_service.build_today_analysis",
+        fake_build_today_analysis,
+    )
+    monkeypatch.setattr("app.api.monitoring.db_service.get_analytics_snapshot", lambda snapshot_key: None)
+    monkeypatch.setattr("app.api.monitoring.db_service.get_latest_analytics_snapshot", lambda snapshot_prefix=None: None)
+
+    response = client.get("/api/analytics/today-analysis", headers=admin_headers)
+
+    assert response.status_code == 200
+    assert response.json()["day_regime"] == "volatil"
+    assert response.json()["observed_results"][0]["animal_number"] == 24
+    assert response.json()["forecast_by_lottery"][0]["candidates"][0]["animal_number"] == 17
 
 
 def test_admin_user_management_and_password_rotation(client, admin_headers):

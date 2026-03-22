@@ -281,6 +281,64 @@ class TelegramService:
         lines.append("Nota: alerta operativa basada en ranking estadistico.")
         return await self.send_message("\n".join(lines))
 
+    async def send_today_analysis_report(self, analysis: dict, phase: str = "apertura") -> bool:
+        forecast_rows = analysis.get("forecast_by_lottery", [])
+        if not forecast_rows:
+            return False
+
+        phase_label = "Reporte de apertura" if phase == "apertura" else "Reporte de media jornada"
+        lines = [
+            "<b>Animalitos Monitor</b>",
+            phase_label,
+            "",
+            f"Fecha: {html.escape(str(analysis.get('draw_date', 'n/a')))}",
+            f"Regimen del dia: <b>{html.escape(analysis.get('day_regime', 'mixto'))}</b>",
+        ]
+
+        hits = analysis.get("system_hits_top1_top3_top5_so_far") or {}
+        lines.append(
+            (
+                f"Sistema hoy -> Top 1 {round(hits.get('hit_top_1_rate', 0) * 100, 1)}% | "
+                f"Top 3 {round(hits.get('hit_top_3_rate', 0) * 100, 1)}% | "
+                f"Top 5 {round(hits.get('hit_top_5_rate', 0) * 100, 1)}%"
+            )
+        )
+
+        strategy_rows = analysis.get("strategy_performance_today") or []
+        if strategy_rows:
+            lines.extend(["", "<b>Estrategias mas fuertes hoy</b>"])
+            for item in strategy_rows[:3]:
+                lines.append(
+                    f"- <b>{html.escape(item.get('title', 'estrategia'))}</b>: "
+                    f"{item.get('hit_count_today', 0)}/{item.get('evaluated_results_today', 0)} "
+                    f"({round(item.get('hit_rate_today', 0) * 100, 1)}%)"
+                )
+
+        for lottery in forecast_rows[:3]:
+            lines.extend(
+                [
+                    "",
+                    f"<b>{html.escape(lottery.get('canonical_lottery_name', 'Loteria'))}</b>",
+                    (
+                        f"Proximo: {html.escape(str(lottery.get('next_draw_time_local') or 'sin sorteo pendiente'))} | "
+                        f"Pendientes: {lottery.get('remaining_draws_today', 0)}"
+                    ),
+                ]
+            )
+            for candidate in (lottery.get("candidates") or [])[:3]:
+                lines.append(
+                    f"- {int(candidate.get('animal_number', 0)):02d} {html.escape(candidate.get('animal_name', 'Animal'))} | "
+                    f"score {float(candidate.get('score', 0)):.3f} | "
+                    f"conf {html.escape(candidate.get('confidence_band', 'baja'))} | "
+                    f"senal {html.escape(candidate.get('signal_leader', 'n/a'))}"
+                )
+
+        notes = analysis.get("notes") or []
+        if notes:
+            lines.extend(["", html.escape(notes[0])])
+
+        return await self.send_message("\n".join(lines))
+
     async def test_connection(self) -> dict:
         if not self.configured:
             return {"success": False, "message": "Telegram is not configured"}

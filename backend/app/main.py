@@ -77,6 +77,14 @@ async def scheduled_possible_results() -> None:
     await monitoring_service.send_today_possible_results()
 
 
+async def scheduled_today_analysis_opening() -> None:
+    await monitoring_service.send_today_analysis_report(phase="apertura")
+
+
+async def scheduled_today_analysis_midday() -> None:
+    await monitoring_service.send_today_analysis_report(phase="media-jornada")
+
+
 async def scheduled_weekly_recovery_backfill() -> None:
     await monitoring_service.run_weekly_recovery_backfill()
 
@@ -86,10 +94,10 @@ async def lifespan(app: FastAPI):
     configure_logging(debug=settings.debug)
 
     expected_provider = settings.database_provider.lower()
+    if expected_provider not in {"mock", "supabase", "postgres"}:
+        raise RuntimeError("DATABASE_PROVIDER must be one of: mock, supabase, postgres.")
     if expected_provider in {"postgres", "supabase"} and not db_service.is_postgres_mode:
-        raise RuntimeError("DATABASE_PROVIDER is set to postgres, but Postgres/Supabase is not reachable.")
-    if expected_provider == "firebase" and not db_service.is_firestore_mode:
-        raise RuntimeError("DATABASE_PROVIDER is set to firebase, but Firestore is not reachable.")
+        raise RuntimeError("DATABASE_PROVIDER is set to supabase, but Supabase/Postgres is not reachable.")
 
     ensure_admin_user()
     db_service.ensure_default_schedules()
@@ -105,6 +113,18 @@ async def lifespan(app: FastAPI):
             scheduled_possible_results,
             trigger=CronTrigger(hour=8, minute=5, timezone=ZoneInfo(settings.app_timezone)),
             id="scheduled_possible_results",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            scheduled_today_analysis_opening,
+            trigger=CronTrigger(hour=9, minute=35, timezone=ZoneInfo(settings.app_timezone)),
+            id="scheduled_today_analysis_opening",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            scheduled_today_analysis_midday,
+            trigger=CronTrigger(hour=13, minute=35, timezone=ZoneInfo(settings.app_timezone)),
+            id="scheduled_today_analysis_midday",
             replace_existing=True,
         )
         scheduler.add_job(
@@ -153,7 +173,7 @@ async def health_check():
     )
     return {
         "status": "healthy",
-        "firebase_connected": status_report.firebase_connected,
+        "database_connected": status_report.database_connected,
         "database_provider": status_report.database_provider,
         "scheduler_running": status_report.scheduler_running,
         "scheduler_mode": status_report.scheduler_mode,

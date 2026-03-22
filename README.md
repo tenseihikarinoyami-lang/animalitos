@@ -1,10 +1,10 @@
 # Animalitos Monitor
 
-Plataforma de monitoreo, historico y analitica operativa para `Lotto Activo`, `La Granjita` y `Lotto Activo Internacional`, construida con `Vue 3`, `FastAPI`, `Telegram` y persistencia compatible con `Firestore` o `Supabase Postgres`.
+Plataforma de monitoreo, historico y analitica operativa para `Lotto Activo`, `La Granjita` y `Lotto Activo Internacional`, construida con `Vue 3`, `FastAPI`, `Telegram` y persistencia en `Supabase Postgres` con modo `mock` para desarrollo y pruebas.
 
 ## Lo que hace hoy
 - Scraping estructurado de resultados actuales e historicos desde `loteriadehoy.com`.
-- Normalizacion con `dedupe_key` y almacenamiento en Firestore.
+- Normalizacion con `dedupe_key` y almacenamiento en `Supabase Postgres`.
 - Dashboard operativo, monitoreo en vivo, historico, analitica y horarios.
 - Resumen estadistico versionado de posibles resultados del dia, con actualizacion intradia conforme salen nuevos sorteos.
 - Backtesting reproducible y metricas `top_1`, `top_3`, `top_5`.
@@ -15,7 +15,7 @@ Plataforma de monitoreo, historico y analitica operativa para `Lotto Activo`, `L
 - Soporte para migracion a `Supabase Postgres` y despliegue en `Render + cron-job.org + Vercel`.
 
 ## Stack
-- Backend: `FastAPI`, `APScheduler`, `Firebase Admin SDK`, `BeautifulSoup`, `httpx`
+- Backend: `FastAPI`, `APScheduler`, `SQLAlchemy`, `BeautifulSoup`, `httpx`
 - Frontend: `Vue 3`, `Pinia`, `Vue Router`, `Chart.js`, `Vite`
 - Operacion: `Telegram`, `PWA shell`, exportes `CSV/PDF`
 
@@ -23,7 +23,7 @@ Plataforma de monitoreo, historico y analitica operativa para `Lotto Activo`, `L
 
 ### 1. Configurar backend
 Edita [`backend/.env.example`](/D:/Proyectos/animalitos/backend/.env.example) o tu `backend/.env` con:
-- Firebase real
+- `DATABASE_PROVIDER=supabase` y `DATABASE_URL`
 - `JWT_SECRET`
 - `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`
 - `BOOTSTRAP_ADMIN_PASSWORD`
@@ -71,4 +71,4 @@ start.bat
 La referencia completa de implementacion y operacion esta en [`GUIA_IMPLEMENTACION_Y_OPERACION.md`](/D:/Proyectos/animalitos/GUIA_IMPLEMENTACION_Y_OPERACION.md).
 
 ## Guia de despliegue en internet
-La ruta recomendada sin tarjeta para salir de Firestore y dejar la app corriendo en la nube esta en [`GUIA_RENDER_SUPABASE_VERCEL_CRONJOB.md`](/D:/Proyectos/animalitos/GUIA_RENDER_SUPABASE_VERCEL_CRONJOB.md).
+La ruta recomendada para dejar la app corriendo en la nube con `Supabase + Render + Vercel` esta en [`GUIA_RENDER_SUPABASE_VERCEL_CRONJOB.md`](/D:/Proyectos/animalitos/GUIA_RENDER_SUPABASE_VERCEL_CRONJOB.md).

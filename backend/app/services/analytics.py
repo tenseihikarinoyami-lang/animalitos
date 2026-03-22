@@ -1,4 +1,5 @@
 from collections import Counter, defaultdict
+from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -38,6 +39,11 @@ from app.models.schemas import (
     StrategiesResponse,
     StrategyConsensusAnimal,
     StrategyPerformance,
+    TodayAnalysisResponse,
+    TodayForecastCandidate,
+    TodayForecastLottery,
+    TodayObservedResult,
+    TodaySystemHitSummary,
     TrendBucket,
     get_animal_name,
 )
@@ -159,8 +165,8 @@ SCORE_COMPONENTS = [
 
 
 class AnalyticsService:
-    METHODOLOGY_VERSION = "ops-hybrid-ranking-v8"
-    ENSEMBLE_VERSION = "hybrid-ensemble-v1"
+    METHODOLOGY_VERSION = "ops-hybrid-ranking-v9"
+    ENSEMBLE_VERSION = "hybrid-ensemble-v2"
     BASELINE_METHODOLOGY_VERSION = "frequency-baseline-v1"
     MINIMUM_BACKTEST_HISTORY = 10
     FULL_TOP_N = 10
@@ -205,6 +211,83 @@ class AnalyticsService:
         if not maximum:
             return 0.0
         return float(value) / float(maximum)
+
+    @staticmethod
+    def _minute_bucket(draw_time_local: str) -> str:
+        if ":" not in draw_time_local:
+            return "00"
+        return draw_time_local.split(":")[1]
+
+    def _comparable_today_results(
+        self,
+        *,
+        lottery_name: str,
+        target_draw_time: str,
+        today_results: list[dict],
+    ) -> list[dict]:
+        if lottery_name != "Lotto Activo Internacional":
+            return list(today_results)
+        target_minute_bucket = self._minute_bucket(target_draw_time)
+        return [
+            item
+            for item in today_results
+            if self._minute_bucket(item.get("draw_time_local", "00:00")) == target_minute_bucket
+        ]
+
+    def _dynamic_component_weights(
+        self,
+        *,
+        lottery_name: str,
+        target_draw_time: str,
+        today_results: list[dict],
+    ) -> dict[str, float]:
+        weights = dict(COMPONENT_WEIGHTS)
+        comparable_results = self._comparable_today_results(
+            lottery_name=lottery_name,
+            target_draw_time=target_draw_time,
+            today_results=today_results,
+        )
+        comparable_count = len(comparable_results)
+        opening_phase = comparable_count < 6
+
+        if opening_phase:
+            weights["slot_recent_14d"] *= 1.12
+            weights["strategy_consensus"] *= 1.35
+            weights["strategy_adaptive"] *= 1.45
+            weights["enjaulado_pressure"] *= 1.9
+            weights["last_transition"] *= 0.65
+            weights["pair_context"] *= 0.55
+            weights["trio_context"] *= 0.45
+            weights["same_day_repeat_pattern"] *= 0.2
+            weights["prefix_overlap"] *= 0.75
+            weights["exact_prefix_match"] *= 0.65
+        else:
+            weights["last_transition"] *= 1.18
+            weights["pair_context"] *= 1.2
+            weights["trio_context"] *= 1.12
+            weights["same_day_repeat_pattern"] *= 1.3
+            weights["strategy_consensus"] *= 0.92
+            weights["strategy_adaptive"] *= 0.95
+
+        if lottery_name == "Lotto Activo":
+            weights["enjaulado_pressure"] *= 1.25
+            weights["strategy_adaptive"] *= 1.12
+        elif lottery_name == "La Granjita":
+            weights["enjaulado_pressure"] *= 1.45
+            weights["overdue_gap"] *= 1.15
+            weights["slot_historical_90d"] *= 1.08
+        elif lottery_name == "Lotto Activo Internacional":
+            weights["cross_lottery_overlap"] *= 0.78
+            weights["cross_lottery_exact"] *= 0.7
+            weights["exact_prefix_match"] *= 0.85
+
+        base_total = sum(COMPONENT_WEIGHTS.values())
+        tuned_total = sum(weights.values())
+        if tuned_total > 0:
+            scale = base_total / tuned_total
+            weights = {key: round(value * scale, 6) for key, value in weights.items()}
+
+        return weights
 
     @staticmethod
     def _day_item_sort_key(item: dict) -> tuple[str, str]:
@@ -693,6 +776,11 @@ class AnalyticsService:
 
         observed_prefix_results = [item for item in today_results if item["draw_time_local"] < target_draw_time]
         observed_prefix = [item["animal_number"] for item in observed_prefix_results]
+        component_weights = self._dynamic_component_weights(
+            lottery_name=lottery_name,
+            target_draw_time=target_draw_time,
+            today_results=today_results,
+        )
 
         maxima = {
             "slot_recent_14d": max(window_counters["slot_recent_14d"].values(), default=1),
@@ -713,7 +801,7 @@ class AnalyticsService:
             "overdue_gap": max(global_counters["last_seen_draws"].values(), default=1) or 1,
             "same_day_repeat_pattern": max(window_counters["same_day_repeat"].values(), default=1),
             "strategy_consensus": max(strategy_context.get("consensus_counts", {}).values(), default=1),
-            "strategy_adaptive": max(strategy_context.get("adaptive_scores", {}).values(), default=1),
+            "strategy_adaptive": strategy_context.get("adaptive_max_by_lottery", {}).get(lottery_name, 1) or 1,
             "enjaulado_pressure": strategy_context.get("enjaulado_max", 1) or 1,
         }
         weak_sample = self._window_is_weak_sample(
@@ -727,126 +815,128 @@ class AnalyticsService:
         for animal_number, animal_name in self._all_animal_keys():
             key = (animal_number, animal_name)
             strategy_hits = strategy_context.get("consensus_counts", {}).get(key, 0)
-            strategy_weighted_hits = strategy_context.get("adaptive_scores", {}).get(key, 0)
+            strategy_weighted_hits = (
+                strategy_context.get("adaptive_scores_by_lottery", {}).get(lottery_name, {}).get(key, 0)
+            )
             enjaulado_days = strategy_context.get("enjaulados_by_lottery", {}).get(lottery_name, {}).get(key, 0)
             score_breakdown = {
                 "slot_recent_14d": round(
                     self._normalize(window_counters["slot_recent_14d"].get(key, 0), maxima["slot_recent_14d"])
-                    * COMPONENT_WEIGHTS["slot_recent_14d"]
+                    * component_weights["slot_recent_14d"]
                     * 100,
                     2,
                 ),
                 "slot_historical_90d": round(
                     self._normalize(window_counters["slot_historical_90d"].get(key, 0), maxima["slot_historical_90d"])
-                    * COMPONENT_WEIGHTS["slot_historical_90d"]
+                    * component_weights["slot_historical_90d"]
                     * 100,
                     2,
                 ),
                 "slot_last4_occurrences": round(
                     self._normalize(window_counters["slot_last4"].get(key, 0), maxima["slot_last4_occurrences"])
-                    * COMPONENT_WEIGHTS["slot_last4_occurrences"]
+                    * component_weights["slot_last4_occurrences"]
                     * 100,
                     2,
                 ),
                 "weekday_slot_frequency": round(
                     self._normalize(window_counters["weekday_slot"].get(key, 0), maxima["weekday_slot_frequency"])
-                    * COMPONENT_WEIGHTS["weekday_slot_frequency"]
+                    * component_weights["weekday_slot_frequency"]
                     * 100,
                     2,
                 ),
                 "daypart_frequency": round(
                     self._normalize(global_counters["daypart"].get(key, 0), maxima["daypart_frequency"])
-                    * COMPONENT_WEIGHTS["daypart_frequency"]
+                    * component_weights["daypart_frequency"]
                     * 100,
                     2,
                 ),
                 "recent_frequency_7d": round(
                     self._normalize(global_counters["recent_7d"].get(key, 0), maxima["recent_frequency_7d"])
-                    * COMPONENT_WEIGHTS["recent_frequency_7d"]
+                    * component_weights["recent_frequency_7d"]
                     * 100,
                     2,
                 ),
                 "recent_frequency_30d": round(
                     self._normalize(global_counters["recent_30d"].get(key, 0), maxima["recent_frequency_30d"])
-                    * COMPONENT_WEIGHTS["recent_frequency_30d"]
+                    * component_weights["recent_frequency_30d"]
                     * 100,
                     2,
                 ),
                 "historical_frequency_90d": round(
                     self._normalize(global_counters["historical_90d"].get(key, 0), maxima["historical_frequency_90d"])
-                    * COMPONENT_WEIGHTS["historical_frequency_90d"]
+                    * component_weights["historical_frequency_90d"]
                     * 100,
                     2,
                 ),
                 "last_transition": round(
                     self._normalize(window_counters["last_transition"].get(key, 0), maxima["last_transition"])
-                    * COMPONENT_WEIGHTS["last_transition"]
+                    * component_weights["last_transition"]
                     * 100,
                     2,
                 ),
                 "pair_context": round(
                     self._normalize(window_counters["pair_context"].get(key, 0), maxima["pair_context"])
-                    * COMPONENT_WEIGHTS["pair_context"]
+                    * component_weights["pair_context"]
                     * 100,
                     2,
                 ),
                 "trio_context": round(
                     self._normalize(window_counters["trio_context"].get(key, 0), maxima["trio_context"])
-                    * COMPONENT_WEIGHTS["trio_context"]
+                    * component_weights["trio_context"]
                     * 100,
                     2,
                 ),
                 "prefix_overlap": round(
                     self._normalize(window_counters["prefix_overlap"].get(key, 0), maxima["prefix_overlap"])
-                    * COMPONENT_WEIGHTS["prefix_overlap"]
+                    * component_weights["prefix_overlap"]
                     * 100,
                     2,
                 ),
                 "exact_prefix_match": round(
                     self._normalize(window_counters["exact_prefix"].get(key, 0), maxima["exact_prefix_match"])
-                    * COMPONENT_WEIGHTS["exact_prefix_match"]
+                    * component_weights["exact_prefix_match"]
                     * 100,
                     2,
                 ),
                 "cross_lottery_overlap": round(
                     self._normalize(window_counters["cross_overlap"].get(key, 0), maxima["cross_lottery_overlap"])
-                    * COMPONENT_WEIGHTS["cross_lottery_overlap"]
+                    * component_weights["cross_lottery_overlap"]
                     * 100,
                     2,
                 ),
                 "cross_lottery_exact": round(
                     self._normalize(window_counters["cross_exact"].get(key, 0), maxima["cross_lottery_exact"])
-                    * COMPONENT_WEIGHTS["cross_lottery_exact"]
+                    * component_weights["cross_lottery_exact"]
                     * 100,
                     2,
                 ),
                 "overdue_gap": round(
                     self._normalize(global_counters["last_seen_draws"].get(key, 0), maxima["overdue_gap"])
-                    * COMPONENT_WEIGHTS["overdue_gap"]
+                    * component_weights["overdue_gap"]
                     * 100,
                     2,
                 ),
                 "same_day_repeat_pattern": round(
                     self._normalize(window_counters["same_day_repeat"].get(key, 0), maxima["same_day_repeat_pattern"])
-                    * COMPONENT_WEIGHTS["same_day_repeat_pattern"]
+                    * component_weights["same_day_repeat_pattern"]
                     * 100,
                     2,
                 ),
                 "strategy_consensus": round(
                     self._normalize(strategy_hits, maxima["strategy_consensus"])
-                    * COMPONENT_WEIGHTS["strategy_consensus"]
+                    * component_weights["strategy_consensus"]
                     * 100,
                     2,
                 ),
                 "strategy_adaptive": round(
                     self._normalize(strategy_weighted_hits, maxima["strategy_adaptive"])
-                    * COMPONENT_WEIGHTS["strategy_adaptive"]
+                    * component_weights["strategy_adaptive"]
                     * 100,
                     2,
                 ),
                 "enjaulado_pressure": round(
                     self._normalize(enjaulado_days, maxima["enjaulado_pressure"])
-                    * COMPONENT_WEIGHTS["enjaulado_pressure"]
+                    * component_weights["enjaulado_pressure"]
                     * 100,
                     2,
                 ),
@@ -2549,24 +2639,37 @@ class AnalyticsService:
             if self._coerce_datetime(item["draw_datetime_utc"]) <= reference_local.astimezone(timezone.utc)
         ]
 
-        adaptive_weights = {}
         consensus_counts = Counter()
-        adaptive_scores = Counter()
+        adaptive_scores_by_lottery: dict[str, Counter] = defaultdict(Counter)
+        strategy_hit_rate_by_lottery: dict[str, dict[str, float]] = defaultdict(dict)
         for source in strategy_sources:
             animals = source.get("animals", [])
             numbers = [int(item.get("animal_number")) for item in animals]
-            if today_results:
-                hit_count = sum(1 for result in today_results if int(result["animal_number"]) in numbers)
-                hit_rate = hit_count / len(today_results)
-            else:
-                hit_count = 0
-                hit_rate = 0
-            source_weight = 0.0 if hit_rate < 0.08 else min(0.5 + hit_rate, 1.5)
-            adaptive_weights[source.get("key")] = source_weight
             for animal in animals:
                 key = (int(animal.get("animal_number")), animal.get("animal_name") or get_animal_name(int(animal.get("animal_number"))))
                 consensus_counts[key] += 1
-                adaptive_scores[key] += source_weight
+
+            for lottery_name in PRIMARY_LOTTERIES:
+                lottery_results = [
+                    result
+                    for result in today_results
+                    if result.get("canonical_lottery_name") == lottery_name
+                ]
+                if lottery_results:
+                    hit_count = sum(1 for result in lottery_results if int(result["animal_number"]) in numbers)
+                    hit_rate = hit_count / len(lottery_results)
+                else:
+                    hit_count = 0
+                    hit_rate = 0
+
+                strategy_hit_rate_by_lottery[lottery_name][source.get("key")] = round(hit_rate, 4)
+                source_weight = 0.0 if hit_rate < 0.08 else min(0.5 + hit_rate, 1.5)
+                for animal in animals:
+                    key = (
+                        int(animal.get("animal_number")),
+                        animal.get("animal_name") or get_animal_name(int(animal.get("animal_number"))),
+                    )
+                    adaptive_scores_by_lottery[lottery_name][key] += source_weight
 
         enjaulados_by_lottery = {}
         for lottery in enjaulados.lotteries:
@@ -2576,10 +2679,14 @@ class AnalyticsService:
 
         return {
             "consensus_counts": consensus_counts,
-            "adaptive_scores": adaptive_scores,
+            "adaptive_scores_by_lottery": adaptive_scores_by_lottery,
+            "strategy_hit_rate_by_lottery": strategy_hit_rate_by_lottery,
             "enjaulados_by_lottery": enjaulados_by_lottery,
             "source_count": max(len(strategy_sources), 1),
-            "adaptive_max": max(adaptive_scores.values(), default=1),
+            "adaptive_max_by_lottery": {
+                lottery_name: max(scores.values(), default=1)
+                for lottery_name, scores in adaptive_scores_by_lottery.items()
+            },
             "enjaulado_max": max(
                 (days for lottery_map in enjaulados_by_lottery.values() for days in lottery_map.values()),
                 default=1,
@@ -2707,6 +2814,300 @@ class AnalyticsService:
             notes=notes,
         )
 
+    def _build_live_strategy_performance(
+        self,
+        *,
+        observed_results: list[dict],
+        strategies: list[dict],
+        system_top5_by_lottery: dict[str, list[int]],
+    ) -> list[StrategyPerformance]:
+        observed_numbers = [int(item["animal_number"]) for item in observed_results]
+        performance_rows = []
+
+        for source in strategies:
+            source_numbers = [int(item.get("animal_number")) for item in source.get("animals", [])]
+            matching_animals = []
+            for animal_number in source_numbers:
+                if animal_number in observed_numbers:
+                    matching_animals.append(
+                        {
+                            "animal_number": animal_number,
+                            "animal_name": get_animal_name(animal_number),
+                        }
+                    )
+
+            overlap_labels = []
+            for lottery_name, system_numbers in system_top5_by_lottery.items():
+                overlaps = [number for number in source_numbers if number in system_numbers]
+                if overlaps:
+                    overlap_labels.append(
+                        f"{lottery_name}: {', '.join(f'{number:02d}' for number in overlaps)}"
+                    )
+
+            hit_count_today = sum(observed_numbers.count(number) for number in source_numbers)
+            performance_rows.append(
+                StrategyPerformance(
+                    key=source.get("key"),
+                    title=source.get("title"),
+                    hit_count_today=hit_count_today,
+                    evaluated_results_today=len(observed_results),
+                    hit_rate_today=round(hit_count_today / len(observed_results), 4) if observed_results else 0,
+                    matching_animals_today=matching_animals,
+                    overlap_with_system_top5=overlap_labels,
+                )
+            )
+
+        return sorted(
+            performance_rows,
+            key=lambda item: (item.hit_rate_today, item.hit_count_today, item.title),
+            reverse=True,
+        )
+
+    def _classify_day_regime(self, observed_results: list[dict]) -> str:
+        numbers = [int(item["animal_number"]) for item in observed_results]
+        if len(numbers) < 4:
+            return "volatil"
+
+        repeats = len(numbers) - len(set(numbers))
+        if repeats <= 1:
+            return "volatil"
+        if repeats <= max(len(numbers) // 3, 2):
+            return "mixto"
+        return "estable"
+
+    def _build_today_forecast_lotteries(
+        self,
+        *,
+        observed_results: list[dict],
+        strategy_sources: list[dict],
+        enjaulados: EnjauladosResponse,
+        possible_results_summary: PossibleResultsSummary | None,
+        reference_local: datetime,
+    ) -> list[TodayForecastLottery]:
+        observed_by_lottery: dict[str, list[dict]] = defaultdict(list)
+        for item in observed_results:
+            observed_by_lottery[item["canonical_lottery_name"]].append(item)
+
+        enjaulados_by_lottery = {
+            lottery.canonical_lottery_name: {
+                item.animal_number: item.days_without_hit for item in lottery.items
+            }
+            for lottery in enjaulados.lotteries
+        }
+
+        system_candidates_by_lottery = {}
+        if possible_results_summary:
+            for lottery in possible_results_summary.lotteries:
+                next_window = lottery.draw_predictions[0] if lottery.draw_predictions else None
+                if next_window and next_window.candidates:
+                    system_candidates_by_lottery[lottery.canonical_lottery_name] = list(next_window.candidates[:8])
+                else:
+                    system_candidates_by_lottery[lottery.canonical_lottery_name] = list(lottery.candidates[:8])
+
+        schedules = {item["canonical_lottery_name"]: item for item in db_service.get_schedules()}
+        forecast_rows: list[TodayForecastLottery] = []
+
+        for lottery_name in PRIMARY_LOTTERIES:
+            observed_lottery_results = observed_by_lottery.get(lottery_name, [])
+            observed_numbers = [int(item["animal_number"]) for item in observed_lottery_results]
+            schedule = schedules.get(lottery_name, {"times": []})
+            observed_times = {item["draw_time_local"] for item in observed_lottery_results}
+            remaining_draws_today = len([time_value for time_value in schedule.get("times", []) if time_value not in observed_times])
+            next_draw = build_next_draw(schedule, reference_local)
+
+            consensus_counter = Counter()
+            adaptive_counter = Counter()
+            for source in strategy_sources:
+                source_numbers = [int(item.get("animal_number")) for item in source.get("animals", [])]
+                hit_count = sum(1 for number in observed_numbers if number in source_numbers)
+                hit_rate = (hit_count / len(observed_numbers)) if observed_numbers else 0
+                source_weight = 0.15 if not observed_numbers else (0.0 if hit_rate < 0.08 else min(0.45 + hit_rate, 1.2))
+                for number in source_numbers:
+                    consensus_counter[number] += 1
+                    adaptive_counter[number] += source_weight
+
+            enjaulados_map = enjaulados_by_lottery.get(lottery_name, {})
+            system_candidates = system_candidates_by_lottery.get(lottery_name, [])
+            system_score_map = {
+                candidate.animal_number: float(candidate.ensemble_score or candidate.score or 0)
+                for candidate in system_candidates
+            }
+            system_max = max(system_score_map.values(), default=0) or 1
+            enjaulado_max = max(enjaulados_map.values(), default=0) or 1
+            consensus_max = max(consensus_counter.values(), default=0) or 1
+            adaptive_max = max(adaptive_counter.values(), default=0) or 1
+
+            ranked_candidates = []
+            for animal_number, animal_name in self._all_animal_keys():
+                system_signal = system_score_map.get(animal_number, 0) / system_max
+                enjaulado_signal = enjaulados_map.get(animal_number, 0) / enjaulado_max
+                consensus_signal = consensus_counter.get(animal_number, 0) / consensus_max
+                adaptive_signal = adaptive_counter.get(animal_number, 0) / adaptive_max
+                score = round(
+                    (system_signal * 0.45)
+                    + (enjaulado_signal * 0.30)
+                    + (consensus_signal * 0.15)
+                    + (adaptive_signal * 0.10),
+                    6,
+                )
+
+                signal_weights = {
+                    "sistema_hibrido": system_signal * 0.45,
+                    "enjaulado_pressure": enjaulado_signal * 0.30,
+                    "strategy_consensus": consensus_signal * 0.15,
+                    "strategy_adaptive": adaptive_signal * 0.10,
+                }
+                signal_leader = max(signal_weights.items(), key=lambda item: item[1])[0]
+                confidence_band = "alta" if score >= 0.68 else "media" if score >= 0.44 else "baja"
+                rationale = (
+                    f"Lidera por {signal_leader.replace('_', ' ')}"
+                    f" | sistema {system_signal:.2f}"
+                    f" | enjaulado {enjaulado_signal:.2f}"
+                    f" | consenso {consensus_signal:.2f}"
+                    f" | adaptativo {adaptive_signal:.2f}"
+                )
+                ranked_candidates.append(
+                    TodayForecastCandidate(
+                        animal_number=animal_number,
+                        animal_name=animal_name,
+                        score=score,
+                        signal_leader=signal_leader,
+                        confidence_band=confidence_band,
+                        enjaulado_days_without_hit=enjaulados_map.get(animal_number, 0),
+                        strategy_mentions=consensus_counter.get(animal_number, 0),
+                        strategy_hit_rate=round(adaptive_counter.get(animal_number, 0), 4),
+                        rationale=rationale,
+                    )
+                )
+
+            ranked_candidates.sort(
+                key=lambda item: (item.score, item.enjaulado_days_without_hit, item.strategy_mentions),
+                reverse=True,
+            )
+            forecast_rows.append(
+                TodayForecastLottery(
+                    canonical_lottery_name=lottery_name,
+                    next_draw_time_local=(next_draw or {}).get("draw_time_local"),
+                    remaining_draws_today=remaining_draws_today,
+                    candidates=ranked_candidates[:7],
+                )
+            )
+
+        return forecast_rows
+
+    def build_today_analysis(
+        self,
+        *,
+        observed_results: list[dict],
+        reference_local: datetime | None = None,
+        force_refresh: bool = False,
+    ) -> TodayAnalysisResponse:
+        reference_local = reference_local or local_now()
+        today = reference_local.date()
+        observed_results = sorted(
+            [
+                deepcopy(item)
+                for item in observed_results
+                if item.get("canonical_lottery_name") in PRIMARY_LOTTERIES
+            ],
+            key=self._day_item_sort_key,
+        )
+        self.ensure_daily_external_snapshots(target_date=today, force_refresh=force_refresh)
+        strategy_sources = self._load_strategy_sources(
+            force_refresh=False,
+            target_date=today,
+            frozen=not force_refresh,
+        )
+        enjaulados = self._load_enjaulados_data(
+            force_refresh=False,
+            target_date=today,
+            frozen=not force_refresh,
+        )
+        review_summary = self.build_today_prediction_review(draw_date=today)
+
+        possible_results_summary = None
+        try:
+            possible_results_summary = self.build_possible_results_summary(reference_local=reference_local)
+        except Exception:
+            possible_results_summary = None
+
+        system_top5_by_lottery = {}
+        if possible_results_summary:
+            for lottery in possible_results_summary.lotteries:
+                next_window = lottery.draw_predictions[0] if lottery.draw_predictions else None
+                candidates = next_window.candidates if next_window and next_window.candidates else lottery.candidates
+                system_top5_by_lottery[lottery.canonical_lottery_name] = [
+                    candidate.animal_number for candidate in candidates[:5]
+                ]
+
+        strategy_performance = self._build_live_strategy_performance(
+            observed_results=observed_results,
+            strategies=strategy_sources,
+            system_top5_by_lottery=system_top5_by_lottery,
+        )
+        forecast_by_lottery = self._build_today_forecast_lotteries(
+            observed_results=observed_results,
+            strategy_sources=strategy_sources,
+            enjaulados=enjaulados,
+            possible_results_summary=possible_results_summary,
+            reference_local=reference_local,
+        )
+        day_regime = self._classify_day_regime(observed_results)
+
+        notes = [
+            "El analisis operativo del dia cruza resultados oficiales observados, rendimiento real de estrategias externas y shortlist del motor hibrido.",
+        ]
+        if strategy_performance:
+            leader = strategy_performance[0]
+            notes.append(
+                f"La estrategia mas efectiva hasta ahora es {leader.title} con {leader.hit_count_today} aciertos sobre {leader.evaluated_results_today} resultados observados."
+            )
+        if day_regime == "volatil":
+            notes.append(
+                "La jornada sigue volatil: conviene apoyar mas en enjaulados y consenso externo que en repeticion intradia."
+            )
+        elif day_regime == "mixto":
+            notes.append(
+                "La jornada ya tiene senales mixtas: se puede equilibrar entre contexto intradia y rezago por loteria."
+            )
+        else:
+            notes.append(
+                "La jornada se ve estable: las transiciones y repeticiones del mismo dia ya pueden pesar mas en el ranking."
+            )
+        if possible_results_summary is None:
+            notes.append(
+                "No se pudo reconstruir la corrida interna del motor para este corte; el forecast visible usa el overlay externo como respaldo."
+            )
+
+        return TodayAnalysisResponse(
+            generated_at=utc_now(),
+            draw_date=today,
+            day_regime=day_regime,
+            observed_results=[
+                TodayObservedResult(
+                    canonical_lottery_name=item["canonical_lottery_name"],
+                    draw_time_local=item["draw_time_local"],
+                    animal_number=int(item["animal_number"]),
+                    animal_name=item.get("animal_name") or get_animal_name(int(item["animal_number"])),
+                    source_url=item.get("source_url"),
+                    source_page=item.get("source_page"),
+                )
+                for item in observed_results
+            ],
+            system_hits_top1_top3_top5_so_far=TodaySystemHitSummary(
+                evaluated_draws=review_summary.evaluated_draws,
+                hit_top_1=review_summary.hit_top_1,
+                hit_top_3=review_summary.hit_top_3,
+                hit_top_5=review_summary.hit_top_5,
+                hit_top_1_rate=review_summary.hit_top_1_rate,
+                hit_top_3_rate=review_summary.hit_top_3_rate,
+                hit_top_5_rate=review_summary.hit_top_5_rate,
+            ),
+            strategy_performance_today=strategy_performance,
+            forecast_by_lottery=forecast_by_lottery,
+            notes=notes,
+        )
+
     def build_quality_report(self, days: int | None = None, lotteries: list[str] | None = None) -> QualityReportResponse:
         days = days or settings.quality_default_days
         selected_lotteries = self._normalize_lotteries(lotteries)
@@ -2828,15 +3229,11 @@ class AnalyticsService:
                         "External scheduler heartbeat is stale; automatic refreshes may be delayed until a user session or fallback cycle wakes the service."
                     )
 
-        database_provider = "mock"
-        if db_service.is_postgres_mode:
-            database_provider = "postgres"
-        elif db_service.is_firestore_mode:
-            database_provider = "firestore"
+        database_provider = "supabase" if db_service.is_postgres_mode else "mock"
 
         return SystemStatusResponse(
             generated_at=utc_now(),
-            firebase_connected=not db_service.is_mock_mode,
+            database_connected=not db_service.is_mock_mode,
             database_provider=database_provider,
             telegram_configured=telegram_service.configured,
             scheduler_running=scheduler_running,

@@ -9,7 +9,7 @@ Arquitectura objetivo:
 - Frontend: `Vercel`
 
 ## Lo que ya hace el proyecto
-- Si defines `DATABASE_URL`, el backend puede usar `Postgres/Supabase` en lugar de Firestore.
+- Si defines `DATABASE_PROVIDER=supabase` y `DATABASE_URL`, el backend usa `Supabase Postgres` como persistencia principal.
 - El esquema se crea automaticamente al iniciar o con [`backend/init_postgres.py`](/D:/Proyectos/animalitos/backend/init_postgres.py).
 - El frontend ya acepta URL remota del backend por medio de `VITE_API_BASE_URL`.
 - El backend ya tiene endpoints internos para Cloud Scheduler:
@@ -71,7 +71,7 @@ Cuando el backend ya este apuntando a Supabase:
 2. Entra al panel admin.
 3. Ejecuta un `backfill` de `90 dias`.
 
-Eso reconstruye el historico desde la fuente web en la nueva base, sin depender de Firestore.
+Eso reconstruye el historico desde la fuente web en la nueva base, sin depender de ningun proveedor legado.
 
 ### 5. Crear proyecto en Google Cloud
 1. Entra a [Google Cloud Console](https://console.cloud.google.com/).

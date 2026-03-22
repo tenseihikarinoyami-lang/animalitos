@@ -530,6 +530,55 @@ class StrategiesResponse(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class TodayObservedResult(BaseModel):
+    canonical_lottery_name: str
+    draw_time_local: str
+    animal_number: int
+    animal_name: str
+    source_url: str | None = None
+    source_page: str | None = None
+
+
+class TodaySystemHitSummary(BaseModel):
+    evaluated_draws: int = 0
+    hit_top_1: int = 0
+    hit_top_3: int = 0
+    hit_top_5: int = 0
+    hit_top_1_rate: float = 0
+    hit_top_3_rate: float = 0
+    hit_top_5_rate: float = 0
+
+
+class TodayForecastCandidate(BaseModel):
+    animal_number: int
+    animal_name: str
+    score: float
+    signal_leader: str
+    confidence_band: str = "baja"
+    enjaulado_days_without_hit: int = 0
+    strategy_mentions: int = 0
+    strategy_hit_rate: float = 0
+    rationale: str | None = None
+
+
+class TodayForecastLottery(BaseModel):
+    canonical_lottery_name: str
+    next_draw_time_local: str | None = None
+    remaining_draws_today: int = 0
+    candidates: list[TodayForecastCandidate] = Field(default_factory=list)
+
+
+class TodayAnalysisResponse(BaseModel):
+    generated_at: datetime
+    draw_date: date
+    day_regime: str
+    observed_results: list[TodayObservedResult] = Field(default_factory=list)
+    system_hits_top1_top3_top5_so_far: TodaySystemHitSummary
+    strategy_performance_today: list[StrategyPerformance] = Field(default_factory=list)
+    forecast_by_lottery: list[TodayForecastLottery] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class ModelHealthBandMetric(BaseModel):
     confidence_band: str
     evaluated_draws: int
@@ -614,7 +663,7 @@ class BackfillJobStatus(BaseModel):
 
 class SystemStatusResponse(BaseModel):
     generated_at: datetime
-    firebase_connected: bool
+    database_connected: bool
     database_provider: str
     telegram_configured: bool
     scheduler_running: bool

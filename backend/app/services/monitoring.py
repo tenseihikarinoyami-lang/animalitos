@@ -969,6 +969,36 @@ class MonitoringService:
 
         return await self.refresh_today(trigger=trigger, notify=notify)
 
+    async def build_today_analysis(self, force_refresh: bool = False):
+        observed_payload = await scraper_service.fetch_today_results()
+        analysis = analytics_service.build_today_analysis(
+            observed_results=observed_payload.get("results", []),
+            reference_local=local_now(),
+            force_refresh=force_refresh,
+        )
+        today_key = local_now().date().isoformat()
+        db_service.save_analytics_snapshot(
+            snapshot_key=f"today-analysis:{today_key}",
+            snapshot=analysis.model_dump(),
+        )
+        return analysis
+
+    async def send_today_analysis_report(self, phase: str = "apertura", force_refresh: bool = False) -> bool:
+        analysis = await self.build_today_analysis(force_refresh=force_refresh)
+        sent = await telegram_service.send_today_analysis_report(
+            analysis.model_dump(),
+            phase=phase,
+        )
+        self._record_scheduler_heartbeat(
+            kind="today-analysis",
+            status="success" if sent else "failed",
+            trigger=f"scheduler-{phase}",
+            message="Reporte operativo del dia procesado.",
+            completed=True,
+            details={"phase": phase, "sent": sent},
+        )
+        return sent
+
     async def send_daily_summary(self) -> bool:
         analytics_service.ensure_daily_external_snapshots(force_refresh=False)
         analytics_service.train_models_and_promote()

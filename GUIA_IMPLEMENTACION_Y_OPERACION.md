@@ -9,7 +9,7 @@ Capacidades activas:
 - Creacion de usuarios admin con `username + clave temporal`.
 - Reseteo admin de claves temporales con cambio obligatorio posterior.
 - Bootstrap admin seguro por entorno o script.
-- Firestore real como base principal.
+- Supabase Postgres como base principal.
 - Scraping estructurado de resultados diarios e historicos.
 - Scheduler para ventanas de sorteo, resumen diario, resumen estadistico matutino y backfill semanal.
 - Calidad diaria por loteria.
@@ -21,7 +21,7 @@ Capacidades activas:
 - Exportacion `CSV/PDF`.
 - Panel admin actualizado y shell PWA basica.
 - Backfill manual asincrono con seguimiento de progreso y estado persistido en el panel admin.
-- Soporte para proveedor de base `Supabase Postgres` ademas de Firestore/mock.
+- Soporte operativo en `Supabase Postgres` y modo `mock` para pruebas locales.
 - Endpoints internos listos para scheduler externo.
 - Heartbeat real del scheduler con deteccion de atraso.
 - Auto-recuperacion cuando entra un usuario y faltan resultados por la hora del dia.
@@ -157,7 +157,7 @@ Definir en [`backend/.env`](/D:/Proyectos/animalitos/backend/.env):
 - `BOOTSTRAP_ADMIN_PASSWORD`
 - `BOOTSTRAP_ADMIN_TOKEN` para el endpoint protegido de bootstrap, si se quiere usar.
 
-## Colecciones Firestore
+## Tablas principales
 - `results`
 - `draw_schedules`
 - `ingestion_runs`
@@ -165,6 +165,9 @@ Definir en [`backend/.env`](/D:/Proyectos/animalitos/backend/.env):
 - `analytics_snapshots`
 - `prediction_runs`
 - `admin_audit_logs`
+- `model_training_examples`
+- `model_versions`
+- `prediction_window_reviews`
 
 ## Operacion diaria recomendada
 1. Ejecutar [`start.bat`](/D:/Proyectos/animalitos/start.bat).
@@ -197,7 +200,7 @@ Guias detalladas:
 ## Verificaciones hechas en desarrollo
 - `pytest` backend: OK.
 - `npm run build` frontend: OK.
-- Firestore real: OK.
+- Supabase real: OK.
 - Telegram real: OK.
 - Envio de mensaje de prueba: OK.
 - Ranking intradia v6: OK.

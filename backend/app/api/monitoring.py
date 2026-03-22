@@ -15,6 +15,7 @@ from app.models.schemas import (
     ResultQueryResponse,
     ScheduleEntry,
     StrategiesResponse,
+    TodayAnalysisResponse,
 )
 from app.services.analytics import analytics_service
 from app.services.database import db_service
@@ -242,6 +243,25 @@ async def get_today_review(
     )
 
 
+@router.get("/analytics/today-analysis", response_model=TodayAnalysisResponse)
+async def get_today_analysis(
+    force_refresh: bool = False,
+    current_user: dict = Depends(get_current_user),
+):
+    if not force_refresh:
+        snapshot = _default_snapshot("today-analysis:")
+        if snapshot:
+            return snapshot
+
+    try:
+        return await monitoring_service.build_today_analysis(force_refresh=force_refresh)
+    except Exception:
+        snapshot = _default_snapshot("today-analysis:")
+        if snapshot:
+            return snapshot
+        raise
+
+
 @router.post("/internal/scheduler/refresh")
 async def internal_scheduler_refresh(_: None = Depends(require_scheduler_token)):
     refresh_status, started = await monitoring_service.start_scheduler_refresh(trigger="cloud-scheduler", notify=True)
@@ -260,6 +280,14 @@ async def internal_scheduler_possible_results(_: None = Depends(require_schedule
 @router.post("/internal/scheduler/daily-summary")
 async def internal_scheduler_daily_summary(_: None = Depends(require_scheduler_token)):
     return {"sent": await monitoring_service.send_daily_summary()}
+
+
+@router.post("/internal/scheduler/today-analysis")
+async def internal_scheduler_today_analysis(
+    phase: str = "apertura",
+    _: None = Depends(require_scheduler_token),
+):
+    return {"sent": await monitoring_service.send_today_analysis_report(phase=phase)}
 
 
 @router.post("/internal/scheduler/weekly-backfill")

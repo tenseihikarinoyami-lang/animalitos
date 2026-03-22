@@ -3,12 +3,10 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from firebase_admin import firestore
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.config import settings
-from app.core.firebase import firebase_initialized, get_db
 from app.core.lottery_catalog import DEFAULT_DRAW_SCHEDULES
 from app.core.postgres import (
     admin_audit_logs_table,
@@ -29,7 +27,6 @@ from app.services.schedule import utc_now
 
 class DatabaseService:
     def __init__(self) -> None:
-        self.db = get_db()
         self.pg_engine = get_engine()
         self._mock_results: dict[str, dict[str, Any]] = {}
         self._mock_users: dict[str, dict[str, Any]] = {}
@@ -53,12 +50,8 @@ class DatabaseService:
         return bool(settings.use_postgres and postgres_initialized and self.pg_engine is not None)
 
     @property
-    def is_firestore_mode(self) -> bool:
-        return bool(not self.is_postgres_mode and settings.use_firebase and firebase_initialized and self.db is not None)
-
-    @property
     def is_mock_mode(self) -> bool:
-        return not self.is_postgres_mode and not self.is_firestore_mode
+        return not self.is_postgres_mode
 
     def reset_mock_state(self) -> None:
         self._mock_results = {}
@@ -106,9 +99,6 @@ class DatabaseService:
     def _should_allow_postgres_fallback(self) -> bool:
         return not settings.use_postgres
 
-    def _should_allow_firestore_fallback(self) -> bool:
-        return not settings.use_firebase
-
     def ensure_default_schedules(self) -> None:
         schedules = [deepcopy(entry) for entry in DEFAULT_DRAW_SCHEDULES]
         if self.is_postgres_mode:
@@ -125,19 +115,6 @@ class DatabaseService:
                     raise
                 self.pg_engine = None
 
-        if self.is_firestore_mode:
-            try:
-                collection = self.db.collection("draw_schedules")
-                for schedule in schedules:
-                    doc_ref = collection.document(schedule["canonical_lottery_name"])
-                    if not doc_ref.get().exists:
-                        doc_ref.set(schedule)
-                return
-            except Exception:
-                if not self._should_allow_firestore_fallback():
-                    raise
-                self.db = None
-
         for schedule in schedules:
             self._mock_schedules[schedule["canonical_lottery_name"]] = schedule
 
@@ -153,16 +130,6 @@ class DatabaseService:
                 if not self._should_allow_postgres_fallback():
                     raise
                 self.pg_engine = None
-
-        if self.is_firestore_mode:
-            try:
-                docs = self.db.collection("draw_schedules").stream()
-                schedules = [doc.to_dict() for doc in docs]
-                return sorted(schedules, key=lambda item: item["canonical_lottery_name"])
-            except Exception:
-                if not self._should_allow_firestore_fallback():
-                    raise
-                self.db = None
 
         if not self._mock_schedules:
             for schedule in DEFAULT_DRAW_SCHEDULES:
@@ -206,12 +173,6 @@ class DatabaseService:
                     raise
                 self.pg_engine = None
 
-        if self.is_firestore_mode:
-            doc_ref = self.db.collection("users").document(payload["username"])
-            doc_ref.set(self._prepare_for_storage(payload))
-            self._users_cache = None
-            return doc_ref.id
-
         self._mock_users[payload["username"]] = payload
         return payload["username"]
 
@@ -227,12 +188,6 @@ class DatabaseService:
                 if not self._should_allow_postgres_fallback():
                     raise
                 self.pg_engine = None
-
-        if self.is_firestore_mode:
-            doc = self.db.collection("users").document(username).get()
-            if not doc.exists:
-                return None
-            return doc.to_dict()
 
         user = self._mock_users.get(username)
         return deepcopy(user) if user else None
@@ -264,14 +219,7 @@ class DatabaseService:
                 if self._users_cache is not None:
                     return deepcopy(self._users_cache[:limit] if limit and limit > 0 else self._users_cache)
 
-        if self.is_firestore_mode:
-            try:
-                users = [doc.to_dict() for doc in self.db.collection("users").stream()]
-                self._users_cache = deepcopy(users)
-            except Exception:
-                users = deepcopy(self._users_cache) if self._users_cache is not None else []
-        else:
-            users = list(self._mock_users.values())
+        users = list(self._mock_users.values())
 
         users.sort(key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
         if limit is None or limit <= 0:
@@ -312,15 +260,6 @@ class DatabaseService:
 
         for result in results:
             dedupe_key = result["dedupe_key"]
-            if self.is_firestore_mode:
-                doc_ref = self.db.collection("results").document(dedupe_key)
-                if doc_ref.get().exists:
-                    duplicates.append(dedupe_key)
-                    continue
-                doc_ref.set(self._prepare_for_storage(result))
-                inserted.append(result)
-                continue
-
             if dedupe_key in self._mock_results:
                 duplicates.append(dedupe_key)
                 continue
@@ -367,12 +306,6 @@ class DatabaseService:
                 if self._results_cache is not None:
                     return deepcopy(self._results_cache)
                 raise
-
-        if self.is_firestore_mode:
-            docs = self.db.collection("results").stream()
-            results = [doc.to_dict() for doc in docs]
-            self._set_cached_results(results)
-            return deepcopy(results)
 
         results = list(self._mock_results.values())
         self._set_cached_results(results)
@@ -459,12 +392,6 @@ class DatabaseService:
                     raise
                 self.pg_engine = None
 
-        if self.is_firestore_mode:
-            doc_ref = self.db.collection("ingestion_runs").document(payload["id"])
-            doc_ref.set(self._prepare_for_storage(json_ready))
-            self._ingestion_runs_cache = None
-            return doc_ref.id
-
         self._mock_ingestion_runs[payload["id"]] = payload
         return payload["id"]
 
@@ -513,14 +440,7 @@ class DatabaseService:
                         cached = [item for item in cached if item.get("status") == status]
                     return cached[:limit] if limit and limit > 0 else cached
 
-        if self.is_firestore_mode:
-            try:
-                runs = [doc.to_dict() for doc in self.db.collection("ingestion_runs").stream()]
-                self._ingestion_runs_cache = deepcopy(runs)
-            except Exception:
-                runs = deepcopy(self._ingestion_runs_cache) if self._ingestion_runs_cache is not None else []
-        else:
-            runs = list(self._mock_ingestion_runs.values())
+        runs = list(self._mock_ingestion_runs.values())
 
         if trigger_contains:
             runs = [item for item in runs if trigger_contains in item.get("trigger", "")]
@@ -561,11 +481,6 @@ class DatabaseService:
                     raise
                 self.pg_engine = None
 
-        if self.is_firestore_mode:
-            doc_ref = self.db.collection("analytics_snapshots").document(snapshot_key)
-            doc_ref.set(self._prepare_for_storage(payload))
-            return doc_ref.id
-
         self._mock_analytics[snapshot_key] = payload
         return snapshot_key
 
@@ -581,12 +496,6 @@ class DatabaseService:
                 if not self._should_allow_postgres_fallback():
                     raise
                 self.pg_engine = None
-
-        if self.is_firestore_mode:
-            doc = self.db.collection("analytics_snapshots").document(snapshot_key).get()
-            if not doc.exists:
-                return None
-            return doc.to_dict()
 
         snapshot = self._mock_analytics.get(snapshot_key)
         return deepcopy(snapshot) if snapshot else None
@@ -606,17 +515,6 @@ class DatabaseService:
                 if not self._should_allow_postgres_fallback():
                     raise
                 self.pg_engine = None
-
-        if self.is_firestore_mode:
-            docs = []
-            for doc in self.db.collection("analytics_snapshots").stream():
-                if snapshot_prefix and not doc.id.startswith(snapshot_prefix):
-                    continue
-                docs.append(doc.to_dict())
-            if not docs:
-                return None
-            docs.sort(key=lambda item: item.get("generated_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-            return docs[0]
 
         keys = list(self._mock_analytics.keys())
         if snapshot_prefix:
@@ -650,11 +548,6 @@ class DatabaseService:
                     raise
                 self.pg_engine = None
 
-        if self.is_firestore_mode:
-            doc_ref = self.db.collection("prediction_runs").document(data["id"])
-            doc_ref.set(self._prepare_for_storage(data))
-            return doc_ref.id
-
         self._mock_prediction_runs[data["id"]] = data
         return data["id"]
 
@@ -671,10 +564,7 @@ class DatabaseService:
                     raise
                 self.pg_engine = None
 
-        if self.is_firestore_mode:
-            runs = [doc.to_dict() for doc in self.db.collection("prediction_runs").stream()]
-        else:
-            runs = list(self._mock_prediction_runs.values())
+        runs = list(self._mock_prediction_runs.values())
 
         runs.sort(key=lambda item: item.get("generated_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
         if limit is None or limit <= 0:
@@ -732,13 +622,6 @@ class DatabaseService:
                     raise
                 self.pg_engine = None
 
-        if self.is_firestore_mode:
-            for example in examples:
-                doc_ref = self.db.collection("model_training_examples").document(example["example_key"])
-                doc_ref.set(self._prepare_for_storage(example))
-                stored += 1
-            return stored
-
         for example in examples:
             self._mock_model_training_examples[example["example_key"]] = deepcopy(example)
             stored += 1
@@ -778,10 +661,7 @@ class DatabaseService:
                     raise
                 self.pg_engine = None
 
-        if self.is_firestore_mode:
-            examples = [doc.to_dict() for doc in self.db.collection("model_training_examples").stream()]
-        else:
-            examples = list(self._mock_model_training_examples.values())
+        examples = list(self._mock_model_training_examples.values())
 
         filtered = []
         for example in examples:
@@ -844,11 +724,6 @@ class DatabaseService:
                     raise
                 self.pg_engine = None
 
-        if self.is_firestore_mode:
-            doc_ref = self.db.collection("model_versions").document(data["model_key"])
-            doc_ref.set(self._prepare_for_storage(data))
-            return doc_ref.id
-
         self._mock_model_versions[data["model_key"]] = data
         return data["model_key"]
 
@@ -876,10 +751,7 @@ class DatabaseService:
                     raise
                 self.pg_engine = None
 
-        if self.is_firestore_mode:
-            models = [doc.to_dict() for doc in self.db.collection("model_versions").stream()]
-        else:
-            models = list(self._mock_model_versions.values())
+        models = list(self._mock_model_versions.values())
 
         if segment_key:
             models = [item for item in models if item.get("segment_key") == segment_key]
@@ -953,13 +825,6 @@ class DatabaseService:
                     raise
                 self.pg_engine = None
 
-        if self.is_firestore_mode:
-            for review in reviews:
-                doc_ref = self.db.collection("prediction_window_reviews").document(review["review_key"])
-                doc_ref.set(self._prepare_for_storage(review))
-                stored += 1
-            return stored
-
         for review in reviews:
             self._mock_prediction_window_reviews[review["review_key"]] = deepcopy(review)
             stored += 1
@@ -999,10 +864,7 @@ class DatabaseService:
                     raise
                 self.pg_engine = None
 
-        if self.is_firestore_mode:
-            reviews = [doc.to_dict() for doc in self.db.collection("prediction_window_reviews").stream()]
-        else:
-            reviews = list(self._mock_prediction_window_reviews.values())
+        reviews = list(self._mock_prediction_window_reviews.values())
 
         filtered = []
         for review in reviews:
@@ -1049,12 +911,6 @@ class DatabaseService:
                     raise
                 self.pg_engine = None
 
-        if self.is_firestore_mode:
-            doc_ref = self.db.collection("admin_audit_logs").document(data["id"])
-            doc_ref.set(self._prepare_for_storage(data))
-            self._audit_logs_cache = None
-            return doc_ref.id
-
         self._mock_audit_logs[data["id"]] = data
         return data["id"]
 
@@ -1077,14 +933,7 @@ class DatabaseService:
                 if self._audit_logs_cache is not None:
                     return deepcopy(self._audit_logs_cache[:limit] if limit and limit > 0 else self._audit_logs_cache)
 
-        if self.is_firestore_mode:
-            try:
-                logs = [doc.to_dict() for doc in self.db.collection("admin_audit_logs").stream()]
-                self._audit_logs_cache = deepcopy(logs)
-            except Exception:
-                logs = deepcopy(self._audit_logs_cache) if self._audit_logs_cache is not None else []
-        else:
-            logs = list(self._mock_audit_logs.values())
+        logs = list(self._mock_audit_logs.values())
 
         logs.sort(key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
         if limit is None or limit <= 0:
@@ -1103,14 +952,6 @@ class DatabaseService:
                         return len(cached)
                     raise
                 self.pg_engine = None
-                cached = self._results_cache if self._results_cache is not None else []
-                return len(cached)
-
-        if self.is_firestore_mode:
-            try:
-                aggregate = self.db.collection("results").count().get()
-                return aggregate[0][0].value if aggregate else 0
-            except Exception:
                 cached = self._results_cache if self._results_cache is not None else []
                 return len(cached)
 

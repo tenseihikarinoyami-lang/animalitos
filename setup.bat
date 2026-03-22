@@ -50,7 +50,7 @@ echo  Setup finalizado
 echo ========================================
 echo.
 echo Estado esperado:
-echo - Firebase: configurado en backend\.env
+echo - Base de datos: usa SUPABASE con DATABASE_PROVIDER=supabase o mock local con DATABASE_PROVIDER=mock
 echo - Telegram: configurado cuando completes BOT TOKEN y CHAT ID
 echo - Bootstrap admin: define BOOTSTRAP_ADMIN_PASSWORD y opcionalmente BOOTSTRAP_ADMIN_TOKEN
 echo - Sin demo admin por defecto

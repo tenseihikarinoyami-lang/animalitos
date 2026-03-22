@@ -5,15 +5,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    database_provider: str = "auto"
+    database_provider: str = "mock"
     database_url: str = Field(
         default="",
         validation_alias=AliasChoices("DATABASE_URL", "SUPABASE_DB_URL"),
     )
-    firebase_project_id: str = "animalitos-90b5c"
-    firebase_private_key: str = ""
-    firebase_client_email: str = ""
-    firebase_credentials_file: str = ""
 
     jwt_secret_key: str = Field(
         default="super-secret-key-change-in-production",
@@ -93,12 +89,7 @@ class Settings(BaseSettings):
     @property
     def use_postgres(self) -> bool:
         provider = self.database_provider.lower()
-        return bool(self.database_url and provider in {"auto", "postgres", "supabase"})
-
-    @property
-    def use_firebase(self) -> bool:
-        provider = self.database_provider.lower()
-        return provider in {"auto", "firebase"} and not self.use_postgres
+        return bool(self.database_url and provider in {"postgres", "supabase"})
 
     model_config = SettingsConfigDict(
         env_file=".env",

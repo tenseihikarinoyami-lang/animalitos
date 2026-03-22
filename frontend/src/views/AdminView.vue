@@ -25,8 +25,8 @@
         </p>
         <div class="status-grid">
           <div class="status-line">
-            <span class="pill" :class="pillClass(systemStatus?.firebase_connected ? 'success' : 'danger')">
-              {{ (systemStatus?.database_provider || 'base').toUpperCase() }} {{ systemStatus?.firebase_connected ? 'OK' : 'OFF' }}
+            <span class="pill" :class="pillClass(systemStatus?.database_connected ? 'success' : 'danger')">
+              {{ (systemStatus?.database_provider || 'base').toUpperCase() }} {{ systemStatus?.database_connected ? 'OK' : 'OFF' }}
             </span>
             <span class="pill" :class="pillClass(systemStatus?.telegram_configured ? 'success' : 'warning')">
               Telegram {{ systemStatus?.telegram_configured ? 'OK' : 'Pendiente' }}

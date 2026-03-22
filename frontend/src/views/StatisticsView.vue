@@ -80,6 +80,66 @@
 
     <section class="split-grid">
       <article class="glass-card section-card col-4">
+        <p class="eyebrow">Hoy</p>
+        <h3 class="section-title">Lectura operativa</h3>
+        <div class="method-stack">
+          <div class="method-line">
+            <span>Regimen</span>
+            <strong>{{ todayAnalysis?.day_regime || 'n/a' }}</strong>
+          </div>
+          <div class="method-line">
+            <span>Resultados oficiales</span>
+            <strong>{{ todayAnalysis?.observed_results?.length ?? 0 }}</strong>
+          </div>
+          <div class="method-line">
+            <span>Estrategia lider</span>
+            <strong>{{ topStrategyToday?.title || 'sin lectura' }}</strong>
+          </div>
+        </div>
+      </article>
+
+      <article class="glass-card section-card col-4">
+        <p class="eyebrow">Resultados oficiales</p>
+        <h3 class="section-title">Lo ya observado hoy</h3>
+        <div v-if="todayAnalysis?.observed_results?.length" class="method-stack">
+          <div
+            v-for="item in todayAnalysis.observed_results.slice(0, 8)"
+            :key="`observed-${item.canonical_lottery_name}-${item.draw_time_local}`"
+            class="method-line expanded-line"
+          >
+            <span>{{ item.canonical_lottery_name }} {{ item.draw_time_local }}</span>
+            <strong>{{ item.animal_number.toString().padStart(2, '0') }} {{ item.animal_name }}</strong>
+          </div>
+        </div>
+        <div v-else class="empty-state">
+          Aun no hay resultados oficiales cargados para el corte actual.
+        </div>
+      </article>
+
+      <article class="glass-card section-card col-4">
+        <p class="eyebrow">Forecast actual</p>
+        <h3 class="section-title">Shortlist del resto del dia</h3>
+        <div v-if="todayAnalysis?.forecast_by_lottery?.length" class="method-stack">
+          <div
+            v-for="item in todayAnalysis.forecast_by_lottery"
+            :key="`forecast-${item.canonical_lottery_name}`"
+            class="anomaly-item"
+          >
+            <strong>{{ item.canonical_lottery_name }}</strong>
+            <p>Proximo {{ item.next_draw_time_local || 'sin sorteo pendiente' }} | pendientes {{ item.remaining_draws_today }}</p>
+            <p>
+              {{ item.candidates.slice(0, 3).map((candidate) => `${candidate.animal_number.toString().padStart(2, '0')} ${candidate.animal_name}`).join(' | ') }}
+            </p>
+          </div>
+        </div>
+        <div v-else class="empty-state">
+          El forecast operativo del dia aun no esta disponible.
+        </div>
+      </article>
+    </section>
+
+    <section class="split-grid">
+      <article class="glass-card section-card col-4">
         <p class="eyebrow">Cierre diario</p>
         <h3 class="section-title">Revision real de hoy</h3>
         <div class="method-stack">
@@ -270,6 +330,40 @@
             <span>Loterias analizadas</span>
             <strong>{{ possibleResults?.lotteries?.length || 0 }}</strong>
           </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="split-grid">
+      <article class="glass-card section-card col-6">
+        <p class="eyebrow">Estrategias hoy</p>
+        <h3 class="section-title">Fuentes externas mejor alineadas</h3>
+        <div v-if="todayAnalysis?.strategy_performance_today?.length" class="method-stack">
+          <div
+            v-for="item in todayAnalysis.strategy_performance_today.slice(0, 5)"
+            :key="`strategy-today-${item.key}`"
+            class="method-line expanded-line"
+          >
+            <span>{{ item.title }}</span>
+            <strong>{{ item.hit_count_today }}/{{ item.evaluated_results_today }} | {{ asPercent(item.hit_rate_today) }}</strong>
+          </div>
+        </div>
+        <div v-else class="empty-state">
+          Aun no hay lectura externa suficiente para comparar estrategias hoy.
+        </div>
+      </article>
+
+      <article class="glass-card section-card col-6">
+        <p class="eyebrow">Notas del dia</p>
+        <h3 class="section-title">Diagnostico operativo</h3>
+        <div v-if="todayAnalysis?.notes?.length" class="anomaly-list">
+          <div v-for="note in todayAnalysis.notes" :key="note" class="anomaly-item">
+            <strong>Lectura</strong>
+            <p>{{ note }}</p>
+          </div>
+        </div>
+        <div v-else class="empty-state">
+          El sistema todavia no ha generado notas operativas para este corte.
         </div>
       </article>
     </section>
@@ -581,7 +675,9 @@ const possibleResults = computed(() => lotteryStore.possibleResults)
 const backtesting = computed(() => lotteryStore.backtesting)
 const modelHealth = computed(() => lotteryStore.modelHealth)
 const todayReview = computed(() => lotteryStore.todayReview)
+const todayAnalysis = computed(() => lotteryStore.todayAnalysis)
 const predictionRows = computed(() => possibleResults.value?.lotteries || [])
+const topStrategyToday = computed(() => (todayAnalysis.value?.strategy_performance_today || [])[0] || null)
 const overallLiftValue = computed(() => {
   if (!backtesting.value) return 0
   return (backtesting.value.overall_top_3_rate || 0) - (backtesting.value.baseline_overall_top_3_rate || 0)
@@ -707,6 +803,7 @@ async function loadAnalytics() {
         lotteryStore.fetchTrends(trendParams, { silent: true }),
         lotteryStore.fetchPossibleResults(analyticsPayload, { silent: true }),
         lotteryStore.fetchTodayReview({}, { silent: true }),
+        lotteryStore.fetchTodayAnalysis({}, { silent: true }),
         lotteryStore.fetchModelHealth({ silent: true }),
       ])
 
