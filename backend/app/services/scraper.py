@@ -186,8 +186,6 @@ class LotteryScraperService:
         return missing_pages
 
     def _should_retry_live_results(self, target_date: date, found_results: list[dict], attempt: int) -> bool:
-        if target_date != local_now().date():
-            return False
         if attempt >= self.LIVE_RETRY_ATTEMPTS:
             return False
         return bool(self._pages_missing_by_now(target_date=target_date, found_results=found_results))

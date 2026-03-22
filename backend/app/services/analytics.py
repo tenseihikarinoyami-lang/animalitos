@@ -23,7 +23,9 @@ from app.models.schemas import (
     LotteryPossibleResults,
     PossibleResultCandidate,
     PossibleResultsSummary,
+    PredictionReviewHourMetric,
     PredictionReviewLotteryMetric,
+    PredictionReviewSignalMetric,
     PredictionReviewSummary,
     PredictionReviewWindow,
     QualityLotteryRecord,
@@ -1694,6 +1696,8 @@ class AnalyticsService:
         windows = []
         totals = {"evaluated": 0, "top1": 0, "top3": 0, "top5": 0}
         by_lottery = {}
+        by_hour = {}
+        by_signal = {}
 
         for result in sorted(target_results, key=lambda item: self._coerce_datetime(item["draw_datetime_utc"])):
             lottery_name = result["canonical_lottery_name"]
@@ -1728,7 +1732,8 @@ class AnalyticsService:
                 )
                 continue
 
-            top_numbers = [int(candidate.get("animal_number")) for candidate in matched_window.get("candidates", [])]
+            candidate_rows = matched_window.get("candidates", [])
+            top_numbers = [int(candidate.get("animal_number")) for candidate in candidate_rows]
             top_1 = top_numbers[:1]
             top_3 = top_numbers[:3]
             top_5 = top_numbers[:5]
@@ -1736,6 +1741,24 @@ class AnalyticsService:
             hit_top_3 = actual_number in top_3
             hit_top_5 = actual_number in top_5
             actual_rank = top_numbers.index(actual_number) + 1 if actual_number in top_numbers else None
+            predicted_top_candidate = candidate_rows[0] if candidate_rows else {}
+            predicted_top_1_number = predicted_top_candidate.get("animal_number")
+            predicted_top_1_name = predicted_top_candidate.get("animal_name")
+            lead_signal_key = None
+            lead_signal_label = None
+            strongest_signals = predicted_top_candidate.get("strongest_signals") or []
+            if strongest_signals:
+                lead_signal_key = strongest_signals[0].get("key")
+                lead_signal_label = strongest_signals[0].get("label") or COMPONENT_LABELS.get(
+                    lead_signal_key,
+                    lead_signal_key,
+                )
+            elif predicted_top_candidate.get("score_breakdown"):
+                lead_signal_key = max(
+                    predicted_top_candidate.get("score_breakdown", {}).items(),
+                    key=lambda item: item[1],
+                )[0]
+                lead_signal_label = COMPONENT_LABELS.get(lead_signal_key, lead_signal_key)
 
             window_row = PredictionReviewWindow(
                 canonical_lottery_name=lottery_name,
@@ -1745,6 +1768,10 @@ class AnalyticsService:
                 actual_animal_name=result["animal_name"],
                 predicted_at=matched_run.get("generated_at"),
                 prediction_delivery_status=matched_run.get("delivery_status"),
+                predicted_top_1_number=predicted_top_1_number,
+                predicted_top_1_name=predicted_top_1_name,
+                lead_signal_key=lead_signal_key,
+                lead_signal_label=lead_signal_label,
                 top_1=top_1,
                 top_3=top_3,
                 top_5=top_5,
@@ -1770,6 +1797,31 @@ class AnalyticsService:
             lottery_metric["top3"] += int(hit_top_3)
             lottery_metric["top5"] += int(hit_top_5)
 
+            hour_metric = by_hour.setdefault(
+                (lottery_name, draw_time_local),
+                {"evaluated": 0, "top1": 0, "top3": 0, "top5": 0},
+            )
+            hour_metric["evaluated"] += 1
+            hour_metric["top1"] += int(hit_top_1)
+            hour_metric["top3"] += int(hit_top_3)
+            hour_metric["top5"] += int(hit_top_5)
+
+            if lead_signal_key:
+                signal_metric = by_signal.setdefault(
+                    lead_signal_key,
+                    {
+                        "label": lead_signal_label or COMPONENT_LABELS.get(lead_signal_key, lead_signal_key),
+                        "evaluated": 0,
+                        "top1": 0,
+                        "top3": 0,
+                        "top5": 0,
+                    },
+                )
+                signal_metric["evaluated"] += 1
+                signal_metric["top1"] += int(hit_top_1)
+                signal_metric["top3"] += int(hit_top_3)
+                signal_metric["top5"] += int(hit_top_5)
+
         lottery_rows = []
         for lottery_name in PRIMARY_LOTTERIES:
             metric = by_lottery.get(lottery_name, {"evaluated": 0, "top1": 0, "top3": 0, "top5": 0})
@@ -1787,6 +1839,59 @@ class AnalyticsService:
                 )
             )
 
+        hour_rows = []
+        for (lottery_name, draw_time_local), metric in sorted(by_hour.items(), key=lambda item: (item[0][0], item[0][1])):
+            evaluated = metric["evaluated"]
+            hour_rows.append(
+                PredictionReviewHourMetric(
+                    canonical_lottery_name=lottery_name,
+                    draw_time_local=draw_time_local,
+                    evaluated_draws=evaluated,
+                    hit_top_1=metric["top1"],
+                    hit_top_3=metric["top3"],
+                    hit_top_5=metric["top5"],
+                    hit_top_1_rate=round(metric["top1"] / evaluated, 4) if evaluated else 0,
+                    hit_top_3_rate=round(metric["top3"] / evaluated, 4) if evaluated else 0,
+                    hit_top_5_rate=round(metric["top5"] / evaluated, 4) if evaluated else 0,
+                )
+            )
+
+        signal_rows = []
+        for signal_key, metric in sorted(by_signal.items(), key=lambda item: (item[1]["top3"], item[1]["evaluated"]), reverse=True):
+            evaluated = metric["evaluated"]
+            signal_rows.append(
+                PredictionReviewSignalMetric(
+                    signal_key=signal_key,
+                    signal_label=metric["label"],
+                    evaluated_draws=evaluated,
+                    hit_top_1=metric["top1"],
+                    hit_top_3=metric["top3"],
+                    hit_top_5=metric["top5"],
+                    hit_top_1_rate=round(metric["top1"] / evaluated, 4) if evaluated else 0,
+                    hit_top_3_rate=round(metric["top3"] / evaluated, 4) if evaluated else 0,
+                    hit_top_5_rate=round(metric["top5"] / evaluated, 4) if evaluated else 0,
+                )
+            )
+
+        strongest_hours = sorted(
+            [row for row in hour_rows if row.evaluated_draws > 0],
+            key=lambda item: (item.hit_top_3_rate, item.hit_top_5_rate, item.evaluated_draws),
+            reverse=True,
+        )[:4]
+        weakest_hours = sorted(
+            [row for row in hour_rows if row.evaluated_draws > 0],
+            key=lambda item: (item.hit_top_3_rate, item.hit_top_5_rate, -item.evaluated_draws),
+        )[:4]
+        strongest_signals = sorted(
+            [row for row in signal_rows if row.evaluated_draws > 0],
+            key=lambda item: (item.hit_top_3_rate, item.hit_top_5_rate, item.evaluated_draws),
+            reverse=True,
+        )[:4]
+        weakest_signals = sorted(
+            [row for row in signal_rows if row.evaluated_draws > 0],
+            key=lambda item: (item.hit_top_3_rate, item.hit_top_5_rate, -item.evaluated_draws),
+        )[:4]
+
         notes = []
         missing_predictions = len([window for window in windows if not window.prediction_available])
         if missing_predictions:
@@ -1796,6 +1901,14 @@ class AnalyticsService:
         if totals["evaluated"]:
             notes.append(
                 f"Resumen operativo: Top 5 acerto {totals['top5']} de {totals['evaluated']} sorteos evaluados."
+            )
+        if strongest_signals:
+            notes.append(
+                f"La senal lider mas estable hoy fue {strongest_signals[0].signal_label} con Top 3 de {round(strongest_signals[0].hit_top_3_rate * 100, 1)}%."
+            )
+        if weakest_signals:
+            notes.append(
+                f"La senal lider mas floja hoy fue {weakest_signals[0].signal_label} con Top 3 de {round(weakest_signals[0].hit_top_3_rate * 100, 1)}%."
             )
 
         return PredictionReviewSummary(
@@ -1810,6 +1923,12 @@ class AnalyticsService:
             hit_top_3_rate=round(totals["top3"] / totals["evaluated"], 4) if totals["evaluated"] else 0,
             hit_top_5_rate=round(totals["top5"] / totals["evaluated"], 4) if totals["evaluated"] else 0,
             by_lottery=lottery_rows,
+            by_hour=hour_rows,
+            by_signal=signal_rows,
+            strongest_hours=strongest_hours,
+            weakest_hours=weakest_hours,
+            strongest_signals=strongest_signals,
+            weakest_signals=weakest_signals,
             windows=sorted(windows, key=lambda item: (item.draw_date, item.draw_time_local, item.canonical_lottery_name)),
             notes=notes,
         )

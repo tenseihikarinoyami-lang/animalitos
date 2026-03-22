@@ -955,7 +955,11 @@ class MonitoringService:
 
     async def send_daily_summary(self) -> bool:
         overview = analytics_service.build_dashboard_overview()
-        sent = await telegram_service.send_daily_summary(overview.model_dump())
+        review_summary = analytics_service.build_today_prediction_review()
+        sent = await telegram_service.send_daily_summary(
+            overview.model_dump(),
+            review_summary.model_dump(),
+        )
         self._record_scheduler_heartbeat(
             kind="daily-summary",
             status="success" if sent else "failed",

@@ -368,6 +368,10 @@ class PredictionReviewWindow(BaseModel):
     actual_animal_name: str
     predicted_at: datetime | None = None
     prediction_delivery_status: str | None = None
+    predicted_top_1_number: int | None = None
+    predicted_top_1_name: str | None = None
+    lead_signal_key: str | None = None
+    lead_signal_label: str | None = None
     top_1: list[int] = Field(default_factory=list)
     top_3: list[int] = Field(default_factory=list)
     top_5: list[int] = Field(default_factory=list)
@@ -389,6 +393,30 @@ class PredictionReviewLotteryMetric(BaseModel):
     hit_top_5_rate: float
 
 
+class PredictionReviewHourMetric(BaseModel):
+    canonical_lottery_name: str
+    draw_time_local: str
+    evaluated_draws: int
+    hit_top_1: int
+    hit_top_3: int
+    hit_top_5: int
+    hit_top_1_rate: float
+    hit_top_3_rate: float
+    hit_top_5_rate: float
+
+
+class PredictionReviewSignalMetric(BaseModel):
+    signal_key: str
+    signal_label: str
+    evaluated_draws: int
+    hit_top_1: int
+    hit_top_3: int
+    hit_top_5: int
+    hit_top_1_rate: float
+    hit_top_3_rate: float
+    hit_top_5_rate: float
+
+
 class PredictionReviewSummary(BaseModel):
     generated_at: datetime
     draw_date: date
@@ -401,6 +429,12 @@ class PredictionReviewSummary(BaseModel):
     hit_top_3_rate: float
     hit_top_5_rate: float
     by_lottery: list[PredictionReviewLotteryMetric] = Field(default_factory=list)
+    by_hour: list[PredictionReviewHourMetric] = Field(default_factory=list)
+    by_signal: list[PredictionReviewSignalMetric] = Field(default_factory=list)
+    strongest_hours: list[PredictionReviewHourMetric] = Field(default_factory=list)
+    weakest_hours: list[PredictionReviewHourMetric] = Field(default_factory=list)
+    strongest_signals: list[PredictionReviewSignalMetric] = Field(default_factory=list)
+    weakest_signals: list[PredictionReviewSignalMetric] = Field(default_factory=list)
     windows: list[PredictionReviewWindow] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 

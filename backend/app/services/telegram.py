@@ -143,7 +143,7 @@ class TelegramService:
         )
         return await self.send_message(message)
 
-    async def send_daily_summary(self, overview: dict) -> bool:
+    async def send_daily_summary(self, overview: dict, review_summary: dict | None = None) -> bool:
         cards = overview.get("primary_lotteries", [])
         lines = [
             "<b>Animalitos Monitor</b>",
@@ -159,6 +159,37 @@ class TelegramService:
                 f"- <b>{html.escape(card['canonical_lottery_name'])}</b>: "
                 f"{card['total_results_today']}/{card['expected_results_today']}"
             )
+
+        if review_summary:
+            lines.extend(
+                [
+                    "",
+                    "<b>Revision de prediccion</b>",
+                    (
+                        f"Top 1: {round(review_summary.get('hit_top_1_rate', 0) * 100, 1)}% | "
+                        f"Top 3: {round(review_summary.get('hit_top_3_rate', 0) * 100, 1)}% | "
+                        f"Top 5: {round(review_summary.get('hit_top_5_rate', 0) * 100, 1)}%"
+                    ),
+                ]
+            )
+            for lottery in review_summary.get("by_lottery", [])[:3]:
+                lines.append(
+                    f"- <b>{html.escape(lottery['canonical_lottery_name'])}</b>: "
+                    f"Top 5 {lottery.get('hit_top_5', 0)}/{lottery.get('evaluated_draws', 0)}"
+                )
+
+            strongest_signal = (review_summary.get("strongest_signals") or [None])[0]
+            weakest_signal = (review_summary.get("weakest_signals") or [None])[0]
+            if strongest_signal:
+                lines.append(
+                    f"Mejor senal lider: {html.escape(strongest_signal['signal_label'])} "
+                    f"({round(strongest_signal.get('hit_top_3_rate', 0) * 100, 1)}% top 3)"
+                )
+            if weakest_signal:
+                lines.append(
+                    f"Senal mas floja: {html.escape(weakest_signal['signal_label'])} "
+                    f"({round(weakest_signal.get('hit_top_3_rate', 0) * 100, 1)}% top 3)"
+                )
 
         return await self.send_message("\n".join(lines))
 

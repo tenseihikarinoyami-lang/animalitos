@@ -78,6 +78,69 @@
       </article>
     </section>
 
+    <section class="split-grid">
+      <article class="glass-card section-card col-4">
+        <p class="eyebrow">Cierre diario</p>
+        <h3 class="section-title">Revision real de hoy</h3>
+        <div class="method-stack">
+          <div class="method-line">
+            <span>Sorteos evaluados</span>
+            <strong>{{ todayReview?.evaluated_draws ?? 0 }}</strong>
+          </div>
+          <div class="method-line">
+            <span>Top 1</span>
+            <strong>{{ asPercent(todayReview?.hit_top_1_rate) }}</strong>
+          </div>
+          <div class="method-line">
+            <span>Top 3</span>
+            <strong>{{ asPercent(todayReview?.hit_top_3_rate) }}</strong>
+          </div>
+          <div class="method-line">
+            <span>Top 5</span>
+            <strong>{{ asPercent(todayReview?.hit_top_5_rate) }}</strong>
+          </div>
+        </div>
+      </article>
+
+      <article class="glass-card section-card col-4">
+        <p class="eyebrow">Por loteria</p>
+        <h3 class="section-title">Rendimiento de la jornada</h3>
+        <div class="method-stack">
+          <div
+            v-for="item in todayReview?.by_lottery || []"
+            :key="`review-lottery-${item.canonical_lottery_name}`"
+            class="method-line expanded-line"
+          >
+            <span>{{ item.canonical_lottery_name }}</span>
+            <strong>{{ item.hit_top_5 }}/{{ item.evaluated_draws }} | {{ asPercent(item.hit_top_5_rate) }}</strong>
+          </div>
+        </div>
+      </article>
+
+      <article class="glass-card section-card col-4">
+        <p class="eyebrow">Señales</p>
+        <h3 class="section-title">Lo mejor y lo mas flojo de hoy</h3>
+        <div class="method-stack">
+          <div
+            v-for="item in todayStrongestSignals"
+            :key="`strong-signal-${item.signal_key}`"
+            class="method-line expanded-line"
+          >
+            <span>{{ item.signal_label }}</span>
+            <strong>{{ asPercent(item.hit_top_3_rate) }} top 3</strong>
+          </div>
+          <div
+            v-for="item in todayWeakestSignals"
+            :key="`weak-signal-${item.signal_key}`"
+            class="method-line expanded-line"
+          >
+            <span>{{ item.signal_label }}</span>
+            <strong>{{ asPercent(item.hit_top_3_rate) }} top 3</strong>
+          </div>
+        </div>
+      </article>
+    </section>
+
     <section class="split-grid stats-grid">
       <article class="glass-card section-card col-7">
         <p class="eyebrow">Frecuencia</p>
@@ -255,6 +318,45 @@
             <span>{{ item.lottery_name }} {{ item.draw_time_local }}</span>
             <strong>{{ asPercent(item.top_3_rate - item.baseline_top_3_rate) }} sobre baseline</strong>
           </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="split-grid">
+      <article class="glass-card section-card col-6">
+        <p class="eyebrow">Horas del dia</p>
+        <h3 class="section-title">Ventanas mas solidas y mas flojas hoy</h3>
+        <div class="method-stack">
+          <div
+            v-for="item in todayStrongestHours"
+            :key="`today-strong-hour-${item.canonical_lottery_name}-${item.draw_time_local}`"
+            class="method-line expanded-line"
+          >
+            <span>{{ item.canonical_lottery_name }} {{ item.draw_time_local }}</span>
+            <strong>{{ asPercent(item.hit_top_5_rate) }} top 5</strong>
+          </div>
+          <div
+            v-for="item in todayWeakestHours"
+            :key="`today-weak-hour-${item.canonical_lottery_name}-${item.draw_time_local}`"
+            class="method-line expanded-line"
+          >
+            <span>{{ item.canonical_lottery_name }} {{ item.draw_time_local }}</span>
+            <strong>{{ asPercent(item.hit_top_5_rate) }} top 5</strong>
+          </div>
+        </div>
+      </article>
+
+      <article class="glass-card section-card col-6">
+        <p class="eyebrow">Notas del dia</p>
+        <h3 class="section-title">Lectura operativa del cierre</h3>
+        <div v-if="todayReview?.notes?.length" class="anomaly-list">
+          <div v-for="note in todayReview.notes" :key="note" class="anomaly-item">
+            <strong>Revision</strong>
+            <p>{{ note }}</p>
+          </div>
+        </div>
+        <div v-else class="empty-state">
+          Aun no hay suficiente cierre del dia para resumir la jornada.
         </div>
       </article>
     </section>
@@ -447,6 +549,7 @@ const analyticsError = ref('')
 const trends = computed(() => lotteryStore.trends)
 const possibleResults = computed(() => lotteryStore.possibleResults)
 const backtesting = computed(() => lotteryStore.backtesting)
+const todayReview = computed(() => lotteryStore.todayReview)
 const predictionRows = computed(() => possibleResults.value?.lotteries || [])
 const overallLiftValue = computed(() => {
   if (!backtesting.value) return 0
@@ -456,6 +559,10 @@ const strongestLotteryRows = computed(() => backtesting.value?.strongest_lotteri
 const weakestLotteryRows = computed(() => backtesting.value?.weakest_lotteries || [])
 const strongestHourRows = computed(() => backtesting.value?.strongest_hours || [])
 const weakestHourRows = computed(() => backtesting.value?.weakest_hours || [])
+const todayStrongestSignals = computed(() => todayReview.value?.strongest_signals || [])
+const todayWeakestSignals = computed(() => todayReview.value?.weakest_signals || [])
+const todayStrongestHours = computed(() => todayReview.value?.strongest_hours || [])
+const todayWeakestHours = computed(() => todayReview.value?.weakest_hours || [])
 
 const chartPalette = {
   cyan: '#58d1ff',
@@ -565,10 +672,11 @@ async function loadAnalytics() {
       ? { days: query.days, lotteries: selectedLottery, top_n: 5 }
       : { days: query.days, top_n: 5 }
 
-    await Promise.all([
-      lotteryStore.fetchTrends(trendParams, { silent: true }),
-      lotteryStore.fetchPossibleResults(analyticsPayload, { silent: true }),
-    ])
+      await Promise.all([
+        lotteryStore.fetchTrends(trendParams, { silent: true }),
+        lotteryStore.fetchPossibleResults(analyticsPayload, { silent: true }),
+        lotteryStore.fetchTodayReview({}, { silent: true }),
+      ])
 
     backtestingLoading.value = true
     lotteryStore.fetchBacktesting(backtestingPayload, { silent: true })
