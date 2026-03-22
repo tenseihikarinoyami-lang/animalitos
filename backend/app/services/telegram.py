@@ -40,6 +40,19 @@ class TelegramService:
         no_tags = re.sub(r"<[^>]+>", "", message)
         return html.unescape(no_tags)
 
+    @staticmethod
+    def _is_conservative_window(candidates: list[dict], window: dict | None = None) -> bool:
+        top_candidates = list(candidates[:3])
+        if not top_candidates:
+            return False
+        medium_or_better = [
+            candidate
+            for candidate in top_candidates
+            if str(candidate.get("confidence_band", "baja")).lower() in {"media", "alta"}
+        ]
+        stability_score = float((window or {}).get("stability_score") or top_candidates[0].get("stability_score") or 0)
+        return not medium_or_better or stability_score < 0.38
+
     async def _post_message(self, message: str, parse_mode: str | None) -> httpx.Response:
         payload = {
             "chat_id": self.chat_id,
@@ -237,7 +250,11 @@ class TelegramService:
             )
             next_window = (lottery.get("draw_predictions") or [{}])[0]
             candidates = next_window.get("candidates") or lottery.get("candidates", [])
-            for candidate in candidates[:5]:
+            conservative_window = self._is_conservative_window(candidates, next_window)
+            if conservative_window:
+                lines.append("Modo conservador: ventana debil, usar shortlist solo como referencia.")
+            candidate_limit = 3 if conservative_window else 5
+            for candidate in candidates[:candidate_limit]:
                 strongest_signal = max((candidate.get("score_breakdown") or {}).items(), key=lambda item: item[1], default=("n/a", 0))
                 lines.append(
                     f"- {candidate['animal_number']:02d} {html.escape(candidate['animal_name'])} | "
@@ -266,6 +283,9 @@ class TelegramService:
                 f"<b>{html.escape(alert['lottery_name'])}</b> | sorteo {html.escape(alert['draw_time_local'])} "
                 f"en {alert['minutes_until']} min"
             )
+            conservative_window = self._is_conservative_window(alert.get("candidates", []))
+            if conservative_window:
+                lines.append("  Modo conservador: confianza baja y ventana volatil.")
             for candidate in alert.get("candidates", [])[:3]:
                 lines.append(
                     f"- {candidate['animal_number']:02d} {html.escape(candidate['animal_name'])} | "

@@ -58,6 +58,100 @@ def test_prepare_for_storage_converts_nested_datetimes_to_strings():
     assert prepared["nested"][1]["ts"] == stamp.isoformat()
 
 
+def test_prune_historical_data_keeps_only_retained_window():
+    today = local_now().date()
+    old_day = today - timedelta(days=31)
+    kept_day = today - timedelta(days=29)
+
+    db_service.upsert_results(
+        [
+            _sample_result(old_day, "08:00", 4, "Lotto Activo"),
+            _sample_result(kept_day, "08:00", 7, "Lotto Activo"),
+        ]
+    )
+    db_service.save_model_training_examples(
+        [
+            {
+                "example_key": "old-example",
+                "segment_key": "lotto-activo-hourly",
+                "canonical_lottery_name": "Lotto Activo",
+                "draw_date": old_day,
+                "draw_time_local": "08:00",
+                "animal_number": 4,
+                "label_hit": True,
+                "methodology_version": "test",
+                "generated_at": datetime(2026, 3, 22, tzinfo=timezone.utc),
+                "features": {"rule_score": 1},
+                "metadata": {},
+            },
+            {
+                "example_key": "kept-example",
+                "segment_key": "lotto-activo-hourly",
+                "canonical_lottery_name": "Lotto Activo",
+                "draw_date": kept_day,
+                "draw_time_local": "08:00",
+                "animal_number": 7,
+                "label_hit": False,
+                "methodology_version": "test",
+                "generated_at": datetime(2026, 3, 22, tzinfo=timezone.utc),
+                "features": {"rule_score": 1},
+                "metadata": {},
+            },
+        ]
+    )
+    db_service.save_prediction_window_reviews(
+        [
+            {
+                "review_key": "old-review",
+                "segment_key": "lotto-activo-hourly",
+                "canonical_lottery_name": "Lotto Activo",
+                "draw_date": old_day,
+                "draw_time_local": "08:00",
+                "actual_animal_number": 4,
+                "actual_animal_name": "Alacran",
+                "predicted_at": datetime(2026, 3, 22, tzinfo=timezone.utc),
+                "model_key": "champion",
+                "ensemble_version": "test",
+                "lead_signal_key": "strategy_consensus",
+                "confidence_band": "baja",
+                "stability_score": 0.2,
+                "hit_top_1": False,
+                "hit_top_3": False,
+                "hit_top_5": False,
+                "payload": {},
+            },
+            {
+                "review_key": "kept-review",
+                "segment_key": "lotto-activo-hourly",
+                "canonical_lottery_name": "Lotto Activo",
+                "draw_date": kept_day,
+                "draw_time_local": "08:00",
+                "actual_animal_number": 7,
+                "actual_animal_name": "Perico",
+                "predicted_at": datetime(2026, 3, 22, tzinfo=timezone.utc),
+                "model_key": "champion",
+                "ensemble_version": "test",
+                "lead_signal_key": "enjaulado_pressure",
+                "confidence_band": "media",
+                "stability_score": 0.5,
+                "hit_top_1": True,
+                "hit_top_3": True,
+                "hit_top_5": True,
+                "payload": {},
+            },
+        ]
+    )
+
+    stats = db_service.prune_historical_data(cutoff_date=today - timedelta(days=29))
+
+    assert stats["results_removed"] == 1
+    assert stats["training_examples_removed"] == 1
+    assert stats["prediction_reviews_removed"] == 1
+    assert len(db_service.get_results(limit=None)) == 1
+    assert db_service.get_model_training_examples(limit=None)[0]["example_key"] == "kept-example"
+    assert db_service.get_prediction_window_reviews(limit=None)[0]["review_key"] == "kept-review"
+
+
 def test_vercel_preview_cors_regex_is_derived_from_frontend_public_url():
     original_frontend_public_url = settings.frontend_public_url
     original_cors_origin_regex = settings.cors_origin_regex

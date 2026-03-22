@@ -39,9 +39,10 @@ class Settings(BaseSettings):
     scheduler_stale_threshold_minutes: int = 20
     scheduler_refresh_status_stale_minutes: int = 25
     scheduler_self_heal_enabled: bool = True
-    backfill_default_days: int = 90
+    backfill_default_days: int = 30
     analytics_default_days: int = 30
     quality_default_days: int = 14
+    results_retention_days: int = 30
     rate_limit_window_seconds: int = 60
     rate_limit_auth_attempts: int = 8
     rate_limit_admin_attempts: int = 24

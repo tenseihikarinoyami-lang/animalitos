@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.config import settings
@@ -956,6 +956,70 @@ class DatabaseService:
                 return len(cached)
 
         return len(self._mock_results)
+
+    def prune_historical_data(self, *, cutoff_date: str | date) -> dict[str, int]:
+        cutoff = self._coerce_date_arg(cutoff_date)
+        if cutoff is None:
+            return {
+                "results_removed": 0,
+                "training_examples_removed": 0,
+                "prediction_reviews_removed": 0,
+            }
+
+        if self.is_postgres_mode:
+            try:
+                with self.pg_engine.begin() as connection:
+                    results_removed = connection.execute(
+                        delete(results_table).where(results_table.c.draw_date < cutoff)
+                    ).rowcount or 0
+                    training_examples_removed = connection.execute(
+                        delete(model_training_examples_table).where(model_training_examples_table.c.draw_date < cutoff)
+                    ).rowcount or 0
+                    prediction_reviews_removed = connection.execute(
+                        delete(prediction_window_reviews_table).where(
+                            prediction_window_reviews_table.c.draw_date < cutoff
+                        )
+                    ).rowcount or 0
+
+                self._results_cache = None
+                self._results_cache_loaded_at = None
+                return {
+                    "results_removed": int(results_removed),
+                    "training_examples_removed": int(training_examples_removed),
+                    "prediction_reviews_removed": int(prediction_reviews_removed),
+                }
+            except Exception:
+                if not self._should_allow_postgres_fallback():
+                    raise
+                self.pg_engine = None
+
+        removed = {
+            "results_removed": 0,
+            "training_examples_removed": 0,
+            "prediction_reviews_removed": 0,
+        }
+
+        for dedupe_key, result in list(self._mock_results.items()):
+            result_date = self._coerce_date_arg(result.get("draw_date"))
+            if result_date and result_date < cutoff:
+                self._mock_results.pop(dedupe_key, None)
+                removed["results_removed"] += 1
+
+        for example_key, example in list(self._mock_model_training_examples.items()):
+            example_date = self._coerce_date_arg(example.get("draw_date"))
+            if example_date and example_date < cutoff:
+                self._mock_model_training_examples.pop(example_key, None)
+                removed["training_examples_removed"] += 1
+
+        for review_key, review in list(self._mock_prediction_window_reviews.items()):
+            review_date = self._coerce_date_arg(review.get("draw_date"))
+            if review_date and review_date < cutoff:
+                self._mock_prediction_window_reviews.pop(review_key, None)
+                removed["prediction_reviews_removed"] += 1
+
+        self._results_cache = None
+        self._results_cache_loaded_at = None
+        return removed
 
 
 db_service = DatabaseService()

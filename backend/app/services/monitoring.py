@@ -55,6 +55,23 @@ class MonitoringService:
     def _save_scheduler_heartbeat(self, payload: dict) -> dict:
         return self._save_snapshot(self.SCHEDULER_HEARTBEAT_SNAPSHOT_KEY, payload)
 
+    def _retention_cutoff_date(self):
+        retention_days = max(int(settings.results_retention_days or 30), 1)
+        return local_now().date() - timedelta(days=retention_days - 1)
+
+    def enforce_data_retention(self) -> dict[str, int]:
+        cutoff_date = self._retention_cutoff_date()
+        stats = db_service.prune_historical_data(cutoff_date=cutoff_date)
+        if any(stats.values()):
+            log_event(
+                logging.getLogger(__name__),
+                logging.INFO,
+                "historical_data_pruned",
+                cutoff_date=cutoff_date.isoformat(),
+                **stats,
+            )
+        return stats
+
     def get_backfill_status(self) -> dict | None:
         snapshot = db_service.get_analytics_snapshot(self.BACKFILL_STATUS_SNAPSHOT_KEY)
         if not snapshot:
@@ -590,6 +607,8 @@ class MonitoringService:
         run_id = db_service.save_ingestion_run(ingestion_run)
         ingestion_run["id"] = run_id
 
+        retention_stats = self.enforce_data_retention()
+
         overview = analytics_service.build_dashboard_overview()
         trends = analytics_service.build_trends(days=settings.analytics_default_days)
         previous_summary = self._latest_prediction_summary()
@@ -636,12 +655,14 @@ class MonitoringService:
                     "ingestion_run_id": ingestion_run.get("id"),
                     "new_results": ingestion_run.get("new_results", 0),
                     "results_found": ingestion_run.get("results_found", 0),
+                    "retention": retention_stats,
                 },
             )
 
         return {
             "ingestion_run": ingestion_run,
             "overview": overview.model_dump(),
+            "retention": retention_stats,
         }
 
     async def refresh_today(self, trigger: str = "manual", notify: bool = True) -> dict:
@@ -786,6 +807,8 @@ class MonitoringService:
         }
         run["id"] = db_service.save_ingestion_run(run)
 
+        retention_stats = self.enforce_data_retention()
+
         if progress_callback:
             progress_callback(
                 status="finalizing",
@@ -819,6 +842,7 @@ class MonitoringService:
             end_date=end_date.isoformat(),
             new_results=inserted_total,
             duplicates=duplicates_total,
+            **retention_stats,
         )
 
         return {
@@ -834,6 +858,7 @@ class MonitoringService:
                 "status": status,
                 "total_days": total_days,
                 "ingestion_run_id": run["id"],
+                "retention": retention_stats,
             },
         }
 

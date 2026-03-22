@@ -93,13 +93,13 @@ PREVIOUS_COMPONENT_WEIGHTS = {
 
 COMPONENT_LABELS = {
     "slot_recent_14d": "Frecuencia reciente por hora (14d)",
-    "slot_historical_90d": "Frecuencia historica por hora (90d)",
+    "slot_historical_90d": "Frecuencia historica por hora (ventana retenida)",
     "slot_last4_occurrences": "Presencia en las ultimas 4 apariciones de esa hora",
     "weekday_slot_frequency": "Coincidencia por dia de semana y hora",
     "daypart_frequency": "Frecuencia por tramo del dia",
     "recent_frequency_7d": "Frecuencia global reciente (7d)",
     "recent_frequency_30d": "Frecuencia global reciente (30d)",
-    "historical_frequency_90d": "Frecuencia global historica (90d)",
+    "historical_frequency_90d": "Frecuencia global historica (ventana retenida)",
     "last_transition": "Transicion desde el ultimo resultado",
     "pair_context": "Pareja previa coincidente",
     "trio_context": "Trio previo coincidente",
@@ -165,14 +165,14 @@ SCORE_COMPONENTS = [
 
 
 class AnalyticsService:
-    METHODOLOGY_VERSION = "ops-hybrid-ranking-v9"
-    ENSEMBLE_VERSION = "hybrid-ensemble-v2"
+    METHODOLOGY_VERSION = "ops-hybrid-ranking-v10"
+    ENSEMBLE_VERSION = "hybrid-ensemble-v3"
     BASELINE_METHODOLOGY_VERSION = "frequency-baseline-v1"
     MINIMUM_BACKTEST_HISTORY = 10
     FULL_TOP_N = 10
     SLOT_CONTEXT_DEPTH = 4
     MARKET_CONTEXT_DEPTH = 6
-    MODEL_LOOKBACK_DAYS = 90
+    MODEL_LOOKBACK_DAYS = 30
     MINIMUM_MODEL_EXAMPLES = 300
     SEGMENT_KEYS = [
         "lotto-activo-hourly",
@@ -218,6 +218,50 @@ class AnalyticsService:
             return "00"
         return draw_time_local.split(":")[1]
 
+    @staticmethod
+    def _strategy_global_bonus(*, hit_count: int, evaluated_count: int) -> float:
+        if hit_count <= 0 or evaluated_count <= 0:
+            return 0.0
+        hit_rate = hit_count / evaluated_count
+        if hit_count >= 4 and hit_rate >= 0.18:
+            return round(min(0.45, 0.14 + (hit_rate * 1.15)), 4)
+        if hit_count >= 2 and hit_rate >= 0.12:
+            return round(min(0.28, 0.08 + (hit_rate * 0.85)), 4)
+        if hit_count >= 1 and evaluated_count <= 6:
+            return 0.05
+        return 0.0
+
+    def _strategy_source_weight(
+        self,
+        *,
+        lottery_results: list[dict],
+        source_numbers: list[int],
+        global_hit_count: int,
+        global_evaluated_count: int,
+    ) -> float:
+        lottery_evaluated = len(lottery_results)
+        lottery_hit_count = sum(1 for result in lottery_results if int(result["animal_number"]) in source_numbers)
+        lottery_hit_rate = (lottery_hit_count / lottery_evaluated) if lottery_evaluated else 0.0
+        global_hit_rate = (global_hit_count / global_evaluated_count) if global_evaluated_count else 0.0
+
+        if lottery_evaluated == 0:
+            base_weight = 0.18 + min(global_hit_rate * 0.25, 0.12)
+        elif lottery_hit_count >= 2 and lottery_hit_rate >= 0.18:
+            base_weight = min(0.55 + lottery_hit_rate + (lottery_hit_count * 0.06), 1.4)
+        elif lottery_hit_rate >= 0.12:
+            base_weight = min(0.32 + lottery_hit_rate + (0.05 if lottery_hit_count >= 2 else 0.0), 1.0)
+        elif lottery_hit_count == 1 and lottery_evaluated <= 4:
+            base_weight = 0.24 + min(global_hit_rate, 0.2) * 0.25
+        else:
+            base_weight = 0.0
+
+        if global_hit_count >= 4:
+            base_weight += min(0.18 + (global_hit_rate * 0.35), 0.3)
+        elif global_hit_count >= 2:
+            base_weight += min(0.08 + (global_hit_rate * 0.25), 0.18)
+
+        return round(min(max(base_weight, 0.0), 1.5), 4)
+
     def _comparable_today_results(
         self,
         *,
@@ -251,27 +295,28 @@ class AnalyticsService:
         opening_phase = comparable_count < 6
 
         if opening_phase:
-            weights["slot_recent_14d"] *= 1.12
-            weights["strategy_consensus"] *= 1.35
-            weights["strategy_adaptive"] *= 1.45
-            weights["enjaulado_pressure"] *= 1.9
+            weights["slot_recent_14d"] *= 1.1
+            weights["recent_frequency_7d"] *= 0.9
+            weights["strategy_consensus"] *= 1.12
+            weights["strategy_adaptive"] *= 1.18
+            weights["enjaulado_pressure"] *= 1.85
             weights["last_transition"] *= 0.65
             weights["pair_context"] *= 0.55
             weights["trio_context"] *= 0.45
-            weights["same_day_repeat_pattern"] *= 0.2
+            weights["same_day_repeat_pattern"] *= 0.12
             weights["prefix_overlap"] *= 0.75
             weights["exact_prefix_match"] *= 0.65
         else:
             weights["last_transition"] *= 1.18
             weights["pair_context"] *= 1.2
             weights["trio_context"] *= 1.12
-            weights["same_day_repeat_pattern"] *= 1.3
+            weights["same_day_repeat_pattern"] *= 1.24
             weights["strategy_consensus"] *= 0.92
-            weights["strategy_adaptive"] *= 0.95
+            weights["strategy_adaptive"] *= 0.98
 
         if lottery_name == "Lotto Activo":
             weights["enjaulado_pressure"] *= 1.25
-            weights["strategy_adaptive"] *= 1.12
+            weights["strategy_adaptive"] *= 1.18
         elif lottery_name == "La Granjita":
             weights["enjaulado_pressure"] *= 1.45
             weights["overdue_gap"] *= 1.15
@@ -703,6 +748,26 @@ class AnalyticsService:
             )
         ]
         probabilities = predict_segment_probabilities(champion_model, feature_rows)
+        if not champion_model or not any(probabilities):
+            probabilities = [
+                round(
+                    min(
+                        max(
+                            (normalized_rule_score * 0.7)
+                            + (external_prior * 0.3)
+                            - (0.06 if weak_sample else 0.0),
+                            0.0,
+                        ),
+                        1.0,
+                    ),
+                    6,
+                )
+                for normalized_rule_score, external_prior in zip(
+                    normalized_rule_scores,
+                    normalized_external_priors,
+                    strict=False,
+                )
+            ]
 
         for candidate, rule_score, external_prior, normalized_rule_score, model_probability in zip(
             candidates,
@@ -776,6 +841,18 @@ class AnalyticsService:
 
         observed_prefix_results = [item for item in today_results if item["draw_time_local"] < target_draw_time]
         observed_prefix = [item["animal_number"] for item in observed_prefix_results]
+        comparable_prefix_results = [
+            item
+            for item in self._comparable_today_results(
+                lottery_name=lottery_name,
+                target_draw_time=target_draw_time,
+                today_results=today_results,
+            )
+            if item["draw_time_local"] < target_draw_time
+        ]
+        comparable_prefix_counter = Counter(int(item["animal_number"]) for item in comparable_prefix_results)
+        opening_phase = len(comparable_prefix_results) < 6
+        segment_key_current = build_segment_key(lottery_name, target_draw_time)
         component_weights = self._dynamic_component_weights(
             lottery_name=lottery_name,
             target_draw_time=target_draw_time,
@@ -800,8 +877,12 @@ class AnalyticsService:
             "cross_lottery_exact": max(window_counters["cross_exact"].values(), default=1),
             "overdue_gap": max(global_counters["last_seen_draws"].values(), default=1) or 1,
             "same_day_repeat_pattern": max(window_counters["same_day_repeat"].values(), default=1),
-            "strategy_consensus": max(strategy_context.get("consensus_counts", {}).values(), default=1),
-            "strategy_adaptive": strategy_context.get("adaptive_max_by_lottery", {}).get(lottery_name, 1) or 1,
+            "strategy_consensus": max(strategy_context.get("weighted_consensus_counts", {}).values(), default=1),
+            "strategy_adaptive": (
+                strategy_context.get("adaptive_max_by_segment", {}).get(segment_key_current)
+                or strategy_context.get("adaptive_max_by_lottery", {}).get(lottery_name, 1)
+                or 1
+            ),
             "enjaulado_pressure": strategy_context.get("enjaulado_max", 1) or 1,
         }
         weak_sample = self._window_is_weak_sample(
@@ -814,9 +895,11 @@ class AnalyticsService:
         candidates: list[DrawPredictionCandidate] = []
         for animal_number, animal_name in self._all_animal_keys():
             key = (animal_number, animal_name)
-            strategy_hits = strategy_context.get("consensus_counts", {}).get(key, 0)
+            strategy_hits = int(strategy_context.get("consensus_counts", {}).get(key, 0))
+            weighted_strategy_hits = strategy_context.get("weighted_consensus_counts", {}).get(key, strategy_hits)
             strategy_weighted_hits = (
-                strategy_context.get("adaptive_scores_by_lottery", {}).get(lottery_name, {}).get(key, 0)
+                strategy_context.get("adaptive_scores_by_segment", {}).get(segment_key_current, {}).get(key, 0)
+                or strategy_context.get("adaptive_scores_by_lottery", {}).get(lottery_name, {}).get(key, 0)
             )
             enjaulado_days = strategy_context.get("enjaulados_by_lottery", {}).get(lottery_name, {}).get(key, 0)
             score_breakdown = {
@@ -923,7 +1006,7 @@ class AnalyticsService:
                     2,
                 ),
                 "strategy_consensus": round(
-                    self._normalize(strategy_hits, maxima["strategy_consensus"])
+                    self._normalize(weighted_strategy_hits, maxima["strategy_consensus"])
                     * component_weights["strategy_consensus"]
                     * 100,
                     2,
@@ -941,6 +1024,38 @@ class AnalyticsService:
                     2,
                 ),
             }
+            repeat_count = comparable_prefix_counter.get(animal_number, 0)
+            if repeat_count and (opening_phase or weak_sample):
+                external_penalty = 0.58 if repeat_count == 1 else 0.38
+                if weak_sample:
+                    external_penalty = min(external_penalty, 0.48 if repeat_count == 1 else 0.3)
+                recent_penalty = 0.88 if repeat_count == 1 else 0.72
+                overlap_penalty = 0.72 if opening_phase else 0.88
+                repeat_penalty = 0.22 if opening_phase else 0.5
+                score_breakdown["strategy_consensus"] = round(
+                    score_breakdown["strategy_consensus"] * external_penalty,
+                    2,
+                )
+                score_breakdown["strategy_adaptive"] = round(
+                    score_breakdown["strategy_adaptive"] * external_penalty,
+                    2,
+                )
+                score_breakdown["same_day_repeat_pattern"] = round(
+                    score_breakdown["same_day_repeat_pattern"] * repeat_penalty,
+                    2,
+                )
+                score_breakdown["recent_frequency_7d"] = round(
+                    score_breakdown["recent_frequency_7d"] * recent_penalty,
+                    2,
+                )
+                score_breakdown["prefix_overlap"] = round(
+                    score_breakdown["prefix_overlap"] * overlap_penalty,
+                    2,
+                )
+                score_breakdown["exact_prefix_match"] = round(
+                    score_breakdown["exact_prefix_match"] * overlap_penalty,
+                    2,
+                )
             candidate = DrawPredictionCandidate(
                 animal_number=animal_number,
                 animal_name=animal_name,
@@ -2640,14 +2755,26 @@ class AnalyticsService:
         ]
 
         consensus_counts = Counter()
+        weighted_consensus_counts = Counter()
         adaptive_scores_by_lottery: dict[str, Counter] = defaultdict(Counter)
+        adaptive_scores_by_segment: dict[str, Counter] = defaultdict(Counter)
         strategy_hit_rate_by_lottery: dict[str, dict[str, float]] = defaultdict(dict)
+        strategy_hit_rate_by_segment: dict[str, dict[str, float]] = defaultdict(dict)
         for source in strategy_sources:
             animals = source.get("animals", [])
             numbers = [int(item.get("animal_number")) for item in animals]
+            global_hit_count = sum(1 for result in today_results if int(result["animal_number"]) in numbers)
+            global_bonus = self._strategy_global_bonus(
+                hit_count=global_hit_count,
+                evaluated_count=len(today_results),
+            )
             for animal in animals:
-                key = (int(animal.get("animal_number")), animal.get("animal_name") or get_animal_name(int(animal.get("animal_number"))))
+                key = (
+                    int(animal.get("animal_number")),
+                    animal.get("animal_name") or get_animal_name(int(animal.get("animal_number"))),
+                )
                 consensus_counts[key] += 1
+                weighted_consensus_counts[key] += 1 + global_bonus
 
             for lottery_name in PRIMARY_LOTTERIES:
                 lottery_results = [
@@ -2663,13 +2790,51 @@ class AnalyticsService:
                     hit_rate = 0
 
                 strategy_hit_rate_by_lottery[lottery_name][source.get("key")] = round(hit_rate, 4)
-                source_weight = 0.0 if hit_rate < 0.08 else min(0.5 + hit_rate, 1.5)
+                source_weight = self._strategy_source_weight(
+                    lottery_results=lottery_results,
+                    source_numbers=numbers,
+                    global_hit_count=global_hit_count,
+                    global_evaluated_count=len(today_results),
+                )
                 for animal in animals:
                     key = (
                         int(animal.get("animal_number")),
                         animal.get("animal_name") or get_animal_name(int(animal.get("animal_number"))),
                     )
                     adaptive_scores_by_lottery[lottery_name][key] += source_weight
+
+                segment_targets = [("08:00", lottery_results)]
+                if lottery_name == "Lotto Activo Internacional":
+                    segment_targets = [
+                        (
+                            "08:00",
+                            [result for result in lottery_results if self._minute_bucket(result.get("draw_time_local", "00:00")) == "00"],
+                        ),
+                        (
+                            "08:30",
+                            [result for result in lottery_results if self._minute_bucket(result.get("draw_time_local", "00:00")) == "30"],
+                        ),
+                    ]
+
+                for segment_draw_time, segment_results in segment_targets:
+                    segment_key = build_segment_key(lottery_name, segment_draw_time)
+                    segment_hit_count = sum(
+                        1 for result in segment_results if int(result["animal_number"]) in numbers
+                    )
+                    segment_hit_rate = (segment_hit_count / len(segment_results)) if segment_results else 0.0
+                    strategy_hit_rate_by_segment[segment_key][source.get("key")] = round(segment_hit_rate, 4)
+                    segment_weight = self._strategy_source_weight(
+                        lottery_results=segment_results,
+                        source_numbers=numbers,
+                        global_hit_count=global_hit_count,
+                        global_evaluated_count=len(today_results),
+                    )
+                    for animal in animals:
+                        key = (
+                            int(animal.get("animal_number")),
+                            animal.get("animal_name") or get_animal_name(int(animal.get("animal_number"))),
+                        )
+                        adaptive_scores_by_segment[segment_key][key] += segment_weight
 
         enjaulados_by_lottery = {}
         for lottery in enjaulados.lotteries:
@@ -2679,13 +2844,20 @@ class AnalyticsService:
 
         return {
             "consensus_counts": consensus_counts,
+            "weighted_consensus_counts": weighted_consensus_counts,
             "adaptive_scores_by_lottery": adaptive_scores_by_lottery,
+            "adaptive_scores_by_segment": adaptive_scores_by_segment,
             "strategy_hit_rate_by_lottery": strategy_hit_rate_by_lottery,
+            "strategy_hit_rate_by_segment": strategy_hit_rate_by_segment,
             "enjaulados_by_lottery": enjaulados_by_lottery,
             "source_count": max(len(strategy_sources), 1),
             "adaptive_max_by_lottery": {
                 lottery_name: max(scores.values(), default=1)
                 for lottery_name, scores in adaptive_scores_by_lottery.items()
+            },
+            "adaptive_max_by_segment": {
+                segment_key: max(scores.values(), default=1)
+                for segment_key, scores in adaptive_scores_by_segment.items()
             },
             "enjaulado_max": max(
                 (days for lottery_map in enjaulados_by_lottery.values() for days in lottery_map.values()),
@@ -2919,11 +3091,21 @@ class AnalyticsService:
             adaptive_counter = Counter()
             for source in strategy_sources:
                 source_numbers = [int(item.get("animal_number")) for item in source.get("animals", [])]
-                hit_count = sum(1 for number in observed_numbers if number in source_numbers)
-                hit_rate = (hit_count / len(observed_numbers)) if observed_numbers else 0
-                source_weight = 0.15 if not observed_numbers else (0.0 if hit_rate < 0.08 else min(0.45 + hit_rate, 1.2))
+                global_hit_count = sum(
+                    1 for result in observed_results if int(result["animal_number"]) in source_numbers
+                )
+                source_weight = self._strategy_source_weight(
+                    lottery_results=observed_lottery_results,
+                    source_numbers=source_numbers,
+                    global_hit_count=global_hit_count,
+                    global_evaluated_count=len(observed_results),
+                )
+                consensus_weight = 1 + self._strategy_global_bonus(
+                    hit_count=global_hit_count,
+                    evaluated_count=len(observed_results),
+                )
                 for number in source_numbers:
-                    consensus_counter[number] += 1
+                    consensus_counter[number] += consensus_weight
                     adaptive_counter[number] += source_weight
 
             enjaulados_map = enjaulados_by_lottery.get(lottery_name, {})
@@ -2936,6 +3118,23 @@ class AnalyticsService:
             enjaulado_max = max(enjaulados_map.values(), default=0) or 1
             consensus_max = max(consensus_counter.values(), default=0) or 1
             adaptive_max = max(adaptive_counter.values(), default=0) or 1
+            component_mix = {
+                "system": 0.40,
+                "enjaulado": 0.28,
+                "consensus": 0.18,
+                "adaptive": 0.14,
+            }
+            if lottery_name == "Lotto Activo":
+                component_mix = {"system": 0.36, "enjaulado": 0.30, "consensus": 0.18, "adaptive": 0.16}
+            elif lottery_name == "La Granjita":
+                component_mix = {"system": 0.34, "enjaulado": 0.34, "consensus": 0.16, "adaptive": 0.16}
+            elif lottery_name == "Lotto Activo Internacional":
+                component_mix = {"system": 0.42, "enjaulado": 0.22, "consensus": 0.18, "adaptive": 0.18}
+            if len(observed_lottery_results) < 4:
+                component_mix["system"] -= 0.05
+                component_mix["enjaulado"] += 0.02
+                component_mix["consensus"] += 0.02
+                component_mix["adaptive"] += 0.01
 
             ranked_candidates = []
             for animal_number, animal_name in self._all_animal_keys():
@@ -2944,20 +3143,20 @@ class AnalyticsService:
                 consensus_signal = consensus_counter.get(animal_number, 0) / consensus_max
                 adaptive_signal = adaptive_counter.get(animal_number, 0) / adaptive_max
                 score = round(
-                    (system_signal * 0.45)
-                    + (enjaulado_signal * 0.30)
-                    + (consensus_signal * 0.15)
-                    + (adaptive_signal * 0.10),
+                    (system_signal * component_mix["system"])
+                    + (enjaulado_signal * component_mix["enjaulado"])
+                    + (consensus_signal * component_mix["consensus"])
+                    + (adaptive_signal * component_mix["adaptive"]),
                     6,
                 )
 
-                signal_weights = {
-                    "sistema_hibrido": system_signal * 0.45,
-                    "enjaulado_pressure": enjaulado_signal * 0.30,
-                    "strategy_consensus": consensus_signal * 0.15,
-                    "strategy_adaptive": adaptive_signal * 0.10,
+                signal_breakdown = {
+                    "sistema_hibrido": system_signal * component_mix["system"],
+                    "enjaulado_pressure": enjaulado_signal * component_mix["enjaulado"],
+                    "strategy_consensus": consensus_signal * component_mix["consensus"],
+                    "strategy_adaptive": adaptive_signal * component_mix["adaptive"],
                 }
-                signal_leader = max(signal_weights.items(), key=lambda item: item[1])[0]
+                signal_leader = max(signal_breakdown.items(), key=lambda item: item[1])[0]
                 confidence_band = "alta" if score >= 0.68 else "media" if score >= 0.44 else "baja"
                 rationale = (
                     f"Lidera por {signal_leader.replace('_', ' ')}"
@@ -2974,7 +3173,7 @@ class AnalyticsService:
                         signal_leader=signal_leader,
                         confidence_band=confidence_band,
                         enjaulado_days_without_hit=enjaulados_map.get(animal_number, 0),
-                        strategy_mentions=consensus_counter.get(animal_number, 0),
+                        strategy_mentions=int(round(consensus_counter.get(animal_number, 0))),
                         strategy_hit_rate=round(adaptive_counter.get(animal_number, 0), 4),
                         rationale=rationale,
                     )
@@ -3061,6 +3260,9 @@ class AnalyticsService:
             leader = strategy_performance[0]
             notes.append(
                 f"La estrategia mas efectiva hasta ahora es {leader.title} con {leader.hit_count_today} aciertos sobre {leader.evaluated_results_today} resultados observados."
+            )
+            notes.append(
+                f"El forecast operativo prioriza las estrategias que hoy vienen mas finas, usando a {leader.title} como guia principal sin soltar el filtro del sistema hibrido."
             )
         if day_regime == "volatil":
             notes.append(

@@ -101,6 +101,7 @@ async def lifespan(app: FastAPI):
 
     ensure_admin_user()
     db_service.ensure_default_schedules()
+    monitoring_service.enforce_data_retention()
 
     scheduler.add_job(
         scheduled_refresh,
