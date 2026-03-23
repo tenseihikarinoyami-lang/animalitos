@@ -13,23 +13,33 @@ from app.services.rate_limit import rate_limiter
 @pytest.fixture(autouse=True)
 def reset_mock_database():
     monitoring_service._backfill_task = None
+    monitoring_service._backtesting_snapshot_task = None
+    monitoring_service._external_signal_snapshot_task = None
     db_service.pg_engine = None
     db_service.reset_mock_state()
     rate_limiter.reset()
     original_password = settings.bootstrap_admin_password
     original_allow_insecure = settings.allow_insecure_dev_admin
     original_provider = settings.database_provider
+    original_start_backtesting_snapshot_refresh = monitoring_service.start_backtesting_snapshot_refresh
+    original_start_external_signal_snapshot_refresh = monitoring_service.start_external_signal_snapshot_refresh
     settings.bootstrap_admin_password = "admin123"
     settings.allow_insecure_dev_admin = False
     settings.database_provider = "mock"
+    monitoring_service.start_backtesting_snapshot_refresh = lambda: False
+    monitoring_service.start_external_signal_snapshot_refresh = lambda: False
     yield
     monitoring_service._backfill_task = None
+    monitoring_service._backtesting_snapshot_task = None
+    monitoring_service._external_signal_snapshot_task = None
     db_service.pg_engine = None
     db_service.reset_mock_state()
     rate_limiter.reset()
     settings.bootstrap_admin_password = original_password
     settings.allow_insecure_dev_admin = original_allow_insecure
     settings.database_provider = original_provider
+    monitoring_service.start_backtesting_snapshot_refresh = original_start_backtesting_snapshot_refresh
+    monitoring_service.start_external_signal_snapshot_refresh = original_start_external_signal_snapshot_refresh
 
 
 @pytest.fixture
