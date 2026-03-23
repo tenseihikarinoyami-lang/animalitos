@@ -45,13 +45,30 @@ class TelegramService:
         top_candidates = list(candidates[:3])
         if not top_candidates:
             return False
+        top_score = float(top_candidates[0].get("ensemble_score") or top_candidates[0].get("score") or 0)
+        third_score = float(top_candidates[-1].get("ensemble_score") or top_candidates[-1].get("score") or 0)
+        top_gap = top_score - third_score
         medium_or_better = [
             candidate
             for candidate in top_candidates
             if str(candidate.get("confidence_band", "baja")).lower() in {"media", "alta"}
         ]
         stability_score = float((window or {}).get("stability_score") or top_candidates[0].get("stability_score") or 0)
-        return not medium_or_better or stability_score < 0.38
+        return (
+            not medium_or_better
+            or len(medium_or_better) < 2
+            or stability_score < 0.5
+            or top_score < 0.58
+            or top_gap < 0.045
+        )
+
+    @staticmethod
+    def _is_conservative_summary(summary: dict) -> bool:
+        operating_mode = str(summary.get("operating_mode", "balanced")).lower()
+        stability = summary.get("prediction_stability") or {}
+        high_windows = int(stability.get("high_confidence_windows", 0) or 0)
+        average_stability = float(stability.get("average_stability_score", 0) or 0)
+        return operating_mode == "conservative" or high_windows == 0 or average_stability < 0.62
 
     async def _post_message(self, message: str, parse_mode: str | None) -> httpx.Response:
         payload = {
@@ -224,6 +241,7 @@ class TelegramService:
         lotteries = summary.get("lotteries", [])
         if not lotteries:
             return False
+        conservative_summary = self._is_conservative_summary(summary)
 
         lines = [
             "<b>Animalitos Monitor</b>",
@@ -241,6 +259,9 @@ class TelegramService:
             lines.append("<b>Cambios relevantes</b>")
             lines.extend(f"- {html.escape(alert)}" for alert in change_alerts[:4])
             lines.append("")
+        if conservative_summary:
+            lines.append("Modo conservador del sistema: la corrida actual no muestra suficiente conviccion para expandir picks.")
+            lines.append("")
 
         for lottery in lotteries[:3]:
             lines.append(f"<b>{html.escape(lottery['canonical_lottery_name'])}</b>")
@@ -250,7 +271,7 @@ class TelegramService:
             )
             next_window = (lottery.get("draw_predictions") or [{}])[0]
             candidates = next_window.get("candidates") or lottery.get("candidates", [])
-            conservative_window = self._is_conservative_window(candidates, next_window)
+            conservative_window = conservative_summary or self._is_conservative_window(candidates, next_window)
             if conservative_window:
                 lines.append("Modo conservador: ventana debil, usar shortlist solo como referencia.")
             candidate_limit = 3 if conservative_window else 5
@@ -313,6 +334,7 @@ class TelegramService:
             "",
             f"Fecha: {html.escape(str(analysis.get('draw_date', 'n/a')))}",
             f"Regimen del dia: <b>{html.escape(analysis.get('day_regime', 'mixto'))}</b>",
+            f"Modo operativo: <b>{html.escape(analysis.get('operating_mode', 'balanced'))}</b>",
         ]
 
         hits = analysis.get("system_hits_top1_top3_top5_so_far") or {}

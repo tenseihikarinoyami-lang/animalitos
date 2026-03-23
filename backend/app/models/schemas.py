@@ -264,6 +264,8 @@ class PossibleResultsSummary(BaseModel):
     history_results_considered: int
     model_version_by_segment: dict[str, str | None] = Field(default_factory=dict)
     prediction_stability: dict[str, Any] = Field(default_factory=dict)
+    operating_mode: str = "balanced"
+    operating_notes: list[str] = Field(default_factory=list)
     score_components: list[ScoreComponent]
     last_backfill_at: datetime | None = None
     change_alerts: list[str] = Field(default_factory=list)
@@ -507,6 +509,13 @@ class StrategyPerformance(BaseModel):
     hit_count_today: int
     evaluated_results_today: int
     hit_rate_today: float
+    guidance_score: float = 0
+    strongest_lottery_name: str | None = None
+    strongest_lottery_hit_count: int = 0
+    strongest_lottery_hit_rate: float = 0
+    overlap_score: float = 0
+    is_guiding_strategy: bool = False
+    by_lottery: list[dict[str, Any]] = Field(default_factory=list)
     matching_animals_today: list[StrategyAnimal] = Field(default_factory=list)
     overlap_with_system_top5: list[str] = Field(default_factory=list)
 
@@ -572,6 +581,7 @@ class TodayAnalysisResponse(BaseModel):
     generated_at: datetime
     draw_date: date
     day_regime: str
+    operating_mode: str = "balanced"
     observed_results: list[TodayObservedResult] = Field(default_factory=list)
     system_hits_top1_top3_top5_so_far: TodaySystemHitSummary
     strategy_performance_today: list[StrategyPerformance] = Field(default_factory=list)

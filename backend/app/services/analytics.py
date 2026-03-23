@@ -2034,6 +2034,9 @@ class AnalyticsService:
             if all_windows
             else 0,
         }
+        operating_mode, operating_notes = self._derive_summary_operating_mode(summary)
+        summary.operating_mode = operating_mode
+        summary.operating_notes = operating_notes
         return summary
 
     def build_backtesting_summary(
@@ -2994,6 +2997,9 @@ class AnalyticsService:
         system_top5_by_lottery: dict[str, list[int]],
     ) -> list[StrategyPerformance]:
         observed_numbers = [int(item["animal_number"]) for item in observed_results]
+        observed_by_lottery: dict[str, list[int]] = defaultdict(list)
+        for item in observed_results:
+            observed_by_lottery[item["canonical_lottery_name"]].append(int(item["animal_number"]))
         performance_rows = []
 
         for source in strategies:
@@ -3009,14 +3015,45 @@ class AnalyticsService:
                     )
 
             overlap_labels = []
+            overlap_score = 0.0
             for lottery_name, system_numbers in system_top5_by_lottery.items():
                 overlaps = [number for number in source_numbers if number in system_numbers]
                 if overlaps:
                     overlap_labels.append(
                         f"{lottery_name}: {', '.join(f'{number:02d}' for number in overlaps)}"
                     )
+                    overlap_score += min(len(overlaps) / max(len(system_numbers), 1), 1.0)
 
             hit_count_today = sum(observed_numbers.count(number) for number in source_numbers)
+            by_lottery = []
+            strongest_lottery_name = None
+            strongest_lottery_hit_count = 0
+            strongest_lottery_hit_rate = 0.0
+            for lottery_name in PRIMARY_LOTTERIES:
+                lottery_numbers = observed_by_lottery.get(lottery_name, [])
+                if not lottery_numbers:
+                    continue
+                lottery_hit_count = sum(lottery_numbers.count(number) for number in source_numbers)
+                lottery_hit_rate = round(lottery_hit_count / len(lottery_numbers), 4) if lottery_numbers else 0
+                by_lottery.append(
+                    {
+                        "canonical_lottery_name": lottery_name,
+                        "hit_count_today": lottery_hit_count,
+                        "evaluated_results_today": len(lottery_numbers),
+                        "hit_rate_today": lottery_hit_rate,
+                    }
+                )
+                if (lottery_hit_rate, lottery_hit_count) > (strongest_lottery_hit_rate, strongest_lottery_hit_count):
+                    strongest_lottery_name = lottery_name
+                    strongest_lottery_hit_count = lottery_hit_count
+                    strongest_lottery_hit_rate = lottery_hit_rate
+            overlap_score = round(min(overlap_score / max(len(system_top5_by_lottery), 1), 1.0), 4)
+            guidance_score = round(
+                (min(round(hit_count_today / len(observed_results), 4) if observed_results else 0, 1.0) * 0.45)
+                + (strongest_lottery_hit_rate * 0.4)
+                + (overlap_score * 0.15),
+                4,
+            )
             performance_rows.append(
                 StrategyPerformance(
                     key=source.get("key"),
@@ -3024,16 +3061,84 @@ class AnalyticsService:
                     hit_count_today=hit_count_today,
                     evaluated_results_today=len(observed_results),
                     hit_rate_today=round(hit_count_today / len(observed_results), 4) if observed_results else 0,
+                    guidance_score=guidance_score,
+                    strongest_lottery_name=strongest_lottery_name,
+                    strongest_lottery_hit_count=strongest_lottery_hit_count,
+                    strongest_lottery_hit_rate=strongest_lottery_hit_rate,
+                    overlap_score=overlap_score,
+                    by_lottery=by_lottery,
                     matching_animals_today=matching_animals,
                     overlap_with_system_top5=overlap_labels,
                 )
             )
 
-        return sorted(
+        sorted_rows = sorted(
             performance_rows,
-            key=lambda item: (item.hit_rate_today, item.hit_count_today, item.title),
+            key=lambda item: (
+                item.guidance_score,
+                item.strongest_lottery_hit_rate,
+                item.hit_rate_today,
+                item.hit_count_today,
+                item.title,
+            ),
             reverse=True,
         )
+        for index, row in enumerate(sorted_rows):
+            row.is_guiding_strategy = index < 3 and row.guidance_score > 0
+        return sorted_rows
+
+    def _derive_summary_operating_mode(self, summary: PossibleResultsSummary) -> tuple[str, list[str]]:
+        stability = summary.prediction_stability or {}
+        high_windows = int(stability.get("high_confidence_windows", 0) or 0)
+        low_windows = int(stability.get("low_confidence_windows", 0) or 0)
+        avg_stability = float(stability.get("average_stability_score", 0) or 0)
+        next_windows = [lottery.draw_predictions[0] for lottery in summary.lotteries if lottery.draw_predictions]
+        weak_windows = sum(1 for window in next_windows if window.weak_sample or (window.confidence_band or "baja") == "baja")
+        tight_windows = 0
+        for window in next_windows:
+            candidates = list(window.candidates[:3])
+            if len(candidates) < 3:
+                continue
+            top_gap = float(candidates[0].ensemble_score or candidates[0].score or 0) - float(
+                candidates[2].ensemble_score or candidates[2].score or 0
+            )
+            if top_gap < 0.045:
+                tight_windows += 1
+
+        notes = []
+        if not next_windows:
+            return "balanced", notes
+        if high_windows == 0 and (avg_stability < 0.62 or weak_windows >= max(1, len(next_windows) // 2) or tight_windows >= max(1, len(next_windows) // 2)):
+            notes.append("No hay ventanas de conviccion alta en la corrida actual.")
+            if tight_windows:
+                notes.append("Los candidatos del top 3 estan demasiado cerrados entre si.")
+            return "conservative", notes
+        if high_windows >= max(1, len(next_windows) // 2) and low_windows == 0 and avg_stability >= 0.72:
+            notes.append("La corrida actual tiene varias ventanas con conviccion alta y ranking estable.")
+            return "aggressive", notes
+        return "balanced", notes
+
+    def _derive_today_operating_mode(
+        self,
+        *,
+        review_summary: PredictionReviewSummary,
+        strategy_performance: list[StrategyPerformance],
+        day_regime: str,
+    ) -> tuple[str, list[str]]:
+        notes = []
+        evaluated = int(review_summary.evaluated_draws or 0)
+        top_5_rate = float(review_summary.hit_top_5_rate or 0)
+        best_strategy_rate = float(strategy_performance[0].hit_rate_today if strategy_performance else 0)
+        if evaluated >= 6 and top_5_rate < 0.18:
+            notes.append("El sistema viene por debajo de 18% en top 5 durante la jornada.")
+            return "conservative", notes
+        if best_strategy_rate < 0.16 and day_regime != "estable":
+            notes.append("Ninguna estrategia externa esta marcando ventaja suficiente en este corte.")
+            return "conservative", notes
+        if day_regime == "estable" and top_5_rate >= 0.24 and best_strategy_rate >= 0.2:
+            notes.append("El sistema y las estrategias externas vienen acompasados en una jornada estable.")
+            return "aggressive", notes
+        return "balanced", notes
 
     def _classify_day_regime(self, observed_results: list[dict]) -> str:
         numbers = [int(item["animal_number"]) for item in observed_results]
@@ -3075,6 +3180,16 @@ class AnalyticsService:
                     system_candidates_by_lottery[lottery.canonical_lottery_name] = list(next_window.candidates[:8])
                 else:
                     system_candidates_by_lottery[lottery.canonical_lottery_name] = list(lottery.candidates[:8])
+        system_top5_by_lottery = {
+            lottery_name: [candidate.animal_number for candidate in candidates[:5]]
+            for lottery_name, candidates in system_candidates_by_lottery.items()
+        }
+        strategy_performance = self._build_live_strategy_performance(
+            observed_results=observed_results,
+            strategies=strategy_sources,
+            system_top5_by_lottery=system_top5_by_lottery,
+        )
+        strategy_performance_by_key = {item.key: item for item in strategy_performance}
 
         schedules = {item["canonical_lottery_name"]: item for item in db_service.get_schedules()}
         forecast_rows: list[TodayForecastLottery] = []
@@ -3094,16 +3209,25 @@ class AnalyticsService:
                 global_hit_count = sum(
                     1 for result in observed_results if int(result["animal_number"]) in source_numbers
                 )
+                performance_row = strategy_performance_by_key.get(source.get("key"))
                 source_weight = self._strategy_source_weight(
                     lottery_results=observed_lottery_results,
                     source_numbers=source_numbers,
                     global_hit_count=global_hit_count,
                     global_evaluated_count=len(observed_results),
                 )
+                if performance_row:
+                    source_weight *= 1 + performance_row.guidance_score
+                    if performance_row.strongest_lottery_name == lottery_name:
+                        source_weight *= 1.12
+                    if not performance_row.is_guiding_strategy and len(observed_results) >= 6:
+                        source_weight *= 0.92
                 consensus_weight = 1 + self._strategy_global_bonus(
                     hit_count=global_hit_count,
                     evaluated_count=len(observed_results),
                 )
+                if performance_row and performance_row.is_guiding_strategy:
+                    consensus_weight *= 1 + min(performance_row.guidance_score, 0.35)
                 for number in source_numbers:
                     consensus_counter[number] += consensus_weight
                     adaptive_counter[number] += source_weight
@@ -3142,13 +3266,20 @@ class AnalyticsService:
                 enjaulado_signal = enjaulados_map.get(animal_number, 0) / enjaulado_max
                 consensus_signal = consensus_counter.get(animal_number, 0) / consensus_max
                 adaptive_signal = adaptive_counter.get(animal_number, 0) / adaptive_max
-                score = round(
+                score = (
                     (system_signal * component_mix["system"])
                     + (enjaulado_signal * component_mix["enjaulado"])
                     + (consensus_signal * component_mix["consensus"])
-                    + (adaptive_signal * component_mix["adaptive"]),
-                    6,
+                    + (adaptive_signal * component_mix["adaptive"])
                 )
+                recent_same_lottery_hits = observed_numbers.count(animal_number)
+                if recent_same_lottery_hits >= 2 and len(observed_lottery_results) >= 4 and adaptive_signal < 0.65:
+                    score *= 0.88
+                elif recent_same_lottery_hits >= 1 and len(observed_lottery_results) >= 4 and adaptive_signal < 0.45:
+                    score *= 0.94
+                if observed_numbers[-2:] and animal_number in observed_numbers[-2:] and enjaulado_signal < 0.7:
+                    score *= 0.95
+                score = round(score, 6)
 
                 signal_breakdown = {
                     "sistema_hibrido": system_signal * component_mix["system"],
@@ -3252,6 +3383,11 @@ class AnalyticsService:
             reference_local=reference_local,
         )
         day_regime = self._classify_day_regime(observed_results)
+        operating_mode, operating_mode_notes = self._derive_today_operating_mode(
+            review_summary=review_summary,
+            strategy_performance=strategy_performance,
+            day_regime=day_regime,
+        )
 
         notes = [
             "El analisis operativo del dia cruza resultados oficiales observados, rendimiento real de estrategias externas y shortlist del motor hibrido.",
@@ -3264,6 +3400,8 @@ class AnalyticsService:
             notes.append(
                 f"El forecast operativo prioriza las estrategias que hoy vienen mas finas, usando a {leader.title} como guia principal sin soltar el filtro del sistema hibrido."
             )
+        for note in operating_mode_notes:
+            notes.append(note)
         if day_regime == "volatil":
             notes.append(
                 "La jornada sigue volatil: conviene apoyar mas en enjaulados y consenso externo que en repeticion intradia."
@@ -3285,6 +3423,7 @@ class AnalyticsService:
             generated_at=utc_now(),
             draw_date=today,
             day_regime=day_regime,
+            operating_mode=operating_mode,
             observed_results=[
                 TodayObservedResult(
                     canonical_lottery_name=item["canonical_lottery_name"],
