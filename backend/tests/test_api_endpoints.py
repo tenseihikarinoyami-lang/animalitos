@@ -470,6 +470,42 @@ def test_enjaulados_strategies_and_today_review_routes(client, admin_headers, mo
     assert review_response.json()["hit_top_5"] == 2
 
 
+def test_today_review_route_prefers_cached_snapshot(client, admin_headers, monkeypatch):
+    generated_at = datetime(2026, 3, 23, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "app.api.monitoring.db_service.get_analytics_snapshot",
+        lambda snapshot_key: {
+            "generated_at": generated_at,
+            "draw_date": "2026-03-23",
+            "methodology_version": "ops-hybrid-ranking-v10",
+            "evaluated_draws": 10,
+            "hit_top_1": 1,
+            "hit_top_3": 2,
+            "hit_top_5": 4,
+            "hit_top_1_rate": 0.1,
+            "hit_top_3_rate": 0.2,
+            "hit_top_5_rate": 0.4,
+            "by_lottery": [],
+            "by_hour": [],
+            "by_signal": [],
+            "windows": [],
+            "notes": ["snapshot"],
+        }
+        if snapshot_key.startswith("today-review:")
+        else None,
+    )
+    monkeypatch.setattr("app.api.monitoring.db_service.get_latest_analytics_snapshot", lambda snapshot_prefix: None)
+    monkeypatch.setattr(
+        "app.api.monitoring.analytics_service.build_today_prediction_review",
+        lambda draw_date=None: (_ for _ in ()).throw(AssertionError("snapshot should avoid rebuild")),
+    )
+
+    response = client.get("/api/analytics/today-review", headers=admin_headers)
+
+    assert response.status_code == 200
+    assert response.json()["evaluated_draws"] == 10
+
+
 def test_today_analysis_route_returns_operational_snapshot(client, admin_headers, monkeypatch):
     generated_at = datetime(2026, 3, 22, tzinfo=timezone.utc)
 

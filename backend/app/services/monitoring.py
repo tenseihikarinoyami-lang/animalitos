@@ -83,6 +83,7 @@ class MonitoringService:
             f"overview:{today_key}",
             f"trends:default:{today_key}",
             f"possible-results:default:{today_key}",
+            f"today-review:{today_key}",
             f"today-analysis:{today_key}",
         )
         return all(self._snapshot_exists(snapshot_key) for snapshot_key in required)
@@ -392,6 +393,7 @@ class MonitoringService:
         overview=None,
         trends=None,
         possible_results=None,
+        today_review=None,
         backtesting=None,
         model_health=None,
         persist_backtesting: bool = True,
@@ -399,6 +401,7 @@ class MonitoringService:
         overview = overview or analytics_service.build_dashboard_overview()
         trends = trends or analytics_service.build_trends(days=settings.analytics_default_days)
         possible_results = possible_results or analytics_service.build_possible_results_summary()
+        today_review = today_review or analytics_service.build_today_prediction_review()
         if persist_backtesting:
             backtesting = backtesting or analytics_service.build_backtesting_summary(days=settings.analytics_default_days)
         model_health = model_health or analytics_service.build_model_health_summary()
@@ -412,6 +415,10 @@ class MonitoringService:
         db_service.save_analytics_snapshot(
             snapshot_key=f"possible-results:default:{today_key}",
             snapshot=possible_results.model_dump(),
+        )
+        db_service.save_analytics_snapshot(
+            snapshot_key=f"today-review:{today_key}",
+            snapshot=today_review.model_dump(),
         )
         if persist_backtesting and backtesting is not None:
             db_service.save_analytics_snapshot(
@@ -500,10 +507,13 @@ class MonitoringService:
                 days=settings.analytics_default_days,
             )
             possible_results = await asyncio.to_thread(analytics_service.build_possible_results_summary)
-            self._persist_default_snapshots(
+            today_review = await asyncio.to_thread(analytics_service.build_today_prediction_review)
+            await asyncio.to_thread(
+                self._persist_default_snapshots,
                 overview=overview,
                 trends=trends,
                 possible_results=possible_results,
+                today_review=today_review,
                 persist_backtesting=False,
             )
             await self.build_today_analysis(force_refresh=False)
@@ -688,11 +698,13 @@ class MonitoringService:
             analytics_service.build_possible_results_summary,
             previous_summary=previous_summary,
         )
+        today_review = await asyncio.to_thread(analytics_service.build_today_prediction_review, draw_date=today)
         await asyncio.to_thread(
             self._persist_default_snapshots,
             overview=overview,
             trends=trends,
             possible_results=possible_results,
+            today_review=today_review,
             persist_backtesting=False,
         )
         if not self._has_today_backtesting_snapshots():
@@ -909,11 +921,13 @@ class MonitoringService:
             analytics_service.build_possible_results_summary,
             previous_summary=previous_summary,
         )
+        today_review = await asyncio.to_thread(analytics_service.build_today_prediction_review, draw_date=local_now().date())
         await asyncio.to_thread(
             self._persist_default_snapshots,
             overview=overview,
             trends=trends,
             possible_results=possible_results,
+            today_review=today_review,
             persist_backtesting=False,
         )
         self.start_backtesting_snapshot_refresh()

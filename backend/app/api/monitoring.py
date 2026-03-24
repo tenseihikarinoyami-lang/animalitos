@@ -251,6 +251,10 @@ async def get_today_review(
     draw_date: str | None = None,
     current_user: dict = Depends(get_current_user),
 ):
+    if not draw_date:
+        snapshot = _default_snapshot("today-review:")
+        if snapshot:
+            return snapshot
     return await asyncio.to_thread(
         analytics_service.build_today_prediction_review,
         draw_date=None if not draw_date else date.fromisoformat(draw_date)
