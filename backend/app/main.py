@@ -1,3 +1,4 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -170,8 +171,9 @@ app.include_router(admin.router, prefix="/api")
 
 @app.get("/health", tags=["Health"])
 async def health_check():
-    status_report = analytics_service.build_system_status(
-        scheduler_running=scheduler.running
+    status_report = await asyncio.to_thread(
+        analytics_service.build_system_status,
+        scheduler_running=scheduler.running,
     )
     return {
         "status": "healthy",

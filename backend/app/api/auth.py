@@ -1,3 +1,4 @@
+import asyncio
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -59,7 +60,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user = db_service.get_user(username)
+    user = await asyncio.to_thread(db_service.get_user, username)
     if not user or not user.get("is_active", True):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -80,20 +81,20 @@ async def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def register(user_data: UserCreate, request: Request, _: None = Depends(limit_auth_requests)):
-    if db_service.get_user(user_data.username):
+    if await asyncio.to_thread(db_service.get_user, user_data.username):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already registered",
         )
 
     payload = user_data.model_dump()
-    payload["password"] = get_password_hash(user_data.password)
+    payload["password"] = await asyncio.to_thread(get_password_hash, user_data.password)
     payload["role"] = "user"
     payload["is_active"] = True
     payload["created_at"] = utc_now()
     payload["must_change_password"] = False
     payload["password_changed_at"] = utc_now()
-    user_id = db_service.save_user(payload)
+    user_id = await asyncio.to_thread(db_service.save_user, payload)
 
     return {
         "id": user_id,
@@ -110,8 +111,9 @@ async def register(user_data: UserCreate, request: Request, _: None = Depends(li
 
 @router.post("/login", response_model=Token)
 async def login(login_data: UserLogin, request: Request, _: None = Depends(limit_auth_requests)):
-    user = db_service.get_user(login_data.username)
-    if not user or not verify_password(login_data.password, user.get("password", "")):
+    user = await asyncio.to_thread(db_service.get_user, login_data.username)
+    password_ok = bool(user) and await asyncio.to_thread(verify_password, login_data.password, user.get("password", ""))
+    if not user or not password_ok:
         if user and user.get("role") == "admin":
             _save_audit_log(
                 action="admin_login",
@@ -190,16 +192,17 @@ async def change_password(
     current_user: dict = Depends(get_current_user),
     _: None = Depends(limit_auth_requests),
 ):
-    if not verify_password(payload.current_password, current_user.get("password", "")):
+    if not await asyncio.to_thread(verify_password, payload.current_password, current_user.get("password", "")):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Current password is incorrect",
         )
 
-    updated_user = db_service.update_user(
+    await asyncio.to_thread(
+        db_service.update_user,
         current_user["username"],
         {
-            "password": get_password_hash(payload.new_password),
+            "password": await asyncio.to_thread(get_password_hash, payload.new_password),
             "must_change_password": False,
             "password_changed_at": utc_now(),
         },
@@ -212,7 +215,7 @@ async def change_password(
         source_ip=_client_host(request),
         details={"must_change_password_cleared": True},
     )
-    refreshed = db_service.get_user(current_user["username"])
+    refreshed = await asyncio.to_thread(db_service.get_user, current_user["username"])
     return {
         "id": refreshed["username"],
         "username": refreshed["username"],
@@ -234,14 +237,14 @@ async def bootstrap_admin_user(
     _: None = Depends(limit_auth_requests),
 ):
     existing_admin = next(
-        (user for user in [db_service.get_user(settings.bootstrap_admin_username)] if user),
+        (user for user in [await asyncio.to_thread(db_service.get_user, settings.bootstrap_admin_username)] if user),
         None,
     )
     if not existing_admin:
         existing_admin = next(
             (
                 item
-                for item in [db_service.get_user(user_data.username)]
+                for item in [await asyncio.to_thread(db_service.get_user, user_data.username)]
                 if item and item.get("role") == "admin"
             ),
             None,
@@ -258,17 +261,17 @@ async def bootstrap_admin_user(
             detail="Invalid bootstrap token",
         )
 
-    if db_service.get_user(user_data.username):
+    if await asyncio.to_thread(db_service.get_user, user_data.username):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already registered",
         )
 
     payload = user_data.model_dump()
-    payload["password"] = get_password_hash(user_data.password)
+    payload["password"] = await asyncio.to_thread(get_password_hash, user_data.password)
     payload["role"] = "admin"
     payload["is_active"] = True
-    db_service.save_user(payload)
+    await asyncio.to_thread(db_service.save_user, payload)
     _save_audit_log(
         action="bootstrap_admin",
         actor_username=user_data.username,
@@ -285,19 +288,19 @@ async def bootstrap_admin_user(
 
 @router.post("/create-admin")
 async def create_admin_user(current_user: dict = Depends(require_admin)):
-    existing = db_service.get_user("admin")
+    existing = await asyncio.to_thread(db_service.get_user, "admin")
     if existing:
         return {"message": "Admin user already exists"}
 
     payload = {
         "username": "admin",
         "email": settings.bootstrap_admin_email,
-        "password": get_password_hash(settings.bootstrap_admin_password or "change-me-now"),
+        "password": await asyncio.to_thread(get_password_hash, settings.bootstrap_admin_password or "change-me-now"),
         "full_name": settings.bootstrap_admin_full_name,
         "role": "admin",
         "is_active": True,
     }
-    db_service.save_user(payload)
+    await asyncio.to_thread(db_service.save_user, payload)
     return {
         "message": "Admin user created successfully",
         "credentials": {"username": "admin"},

@@ -337,6 +337,27 @@ def test_historical_frozen_external_signals_do_not_trigger_live_fetch(monkeypatc
     assert enjaulados.lotteries == []
 
 
+def test_schedule_recovery_check_skips_when_external_scheduler_is_enabled(monkeypatch):
+    monkeypatch.setattr("app.services.monitoring.settings.use_external_scheduler", True)
+    monitoring_service._self_heal_task = None
+
+    started = monitoring_service.schedule_recovery_check(trigger="test")
+
+    assert started is False
+    assert monitoring_service._self_heal_task is None
+
+
+def test_start_default_snapshot_warmup_skips_when_snapshots_are_ready(monkeypatch):
+    monkeypatch.setattr("app.services.monitoring.settings.startup_snapshot_warmup_enabled", True)
+    monkeypatch.setattr(monitoring_service, "_has_today_operational_snapshots", lambda: True)
+    monitoring_service._snapshot_warmup_task = None
+
+    started = monitoring_service.start_default_snapshot_warmup()
+
+    assert started is False
+    assert monitoring_service._snapshot_warmup_task is None
+
+
 def test_possible_results_summary_uses_cross_lottery_and_recent_slot_context():
     today = local_now().date()
     seed = [

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import date
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
@@ -60,7 +61,7 @@ async def get_dashboard_overview(current_user: dict = Depends(get_current_user))
     monitoring_service.schedule_recovery_check(trigger="dashboard")
     if snapshot:
         return snapshot
-    return analytics_service.build_dashboard_overview()
+    return await asyncio.to_thread(analytics_service.build_dashboard_overview)
 
 
 @router.get("/results", response_model=ResultQueryResponse)
@@ -72,7 +73,8 @@ async def get_results(
     limit: int = 100,
     current_user: dict = Depends(get_current_user),
 ):
-    items = db_service.get_results(
+    items = await asyncio.to_thread(
+        db_service.get_results,
         canonical_lottery_name=lottery_name,
         start_date=start_date,
         end_date=end_date,
@@ -100,7 +102,8 @@ async def get_today_results(
 ):
     monitoring_service.schedule_recovery_check(trigger="today-results")
     today = local_now().date().isoformat()
-    items = db_service.get_results(
+    items = await asyncio.to_thread(
+        db_service.get_results,
         canonical_lottery_name=lottery_name,
         start_date=today,
         end_date=today,
@@ -122,7 +125,8 @@ async def get_results_history(
     limit: int = 500,
     current_user: dict = Depends(get_current_user),
 ):
-    items = db_service.get_results(
+    items = await asyncio.to_thread(
+        db_service.get_results,
         canonical_lottery_name=lottery_name,
         start_date=start_date,
         end_date=end_date,
@@ -144,7 +148,7 @@ async def get_results_history(
 
 @router.get("/schedules", response_model=list[ScheduleEntry])
 async def get_schedules(current_user: dict = Depends(get_current_user)):
-    return db_service.get_schedules()
+    return await asyncio.to_thread(db_service.get_schedules)
 
 
 @router.get("/analytics/trends", response_model=AnalyticsTrends)
@@ -159,7 +163,7 @@ async def get_trends(
             return snapshot
 
     try:
-        return analytics_service.build_trends(lottery_name=lottery_name, days=days)
+        return await asyncio.to_thread(analytics_service.build_trends, lottery_name=lottery_name, days=days)
     except Exception:
         snapshot = _default_snapshot("trends:default:")
         if snapshot:
@@ -180,7 +184,11 @@ async def get_possible_results(
 
     selected_lotteries = [item.strip() for item in lotteries.split(",")] if lotteries else None
     try:
-        return analytics_service.build_possible_results_summary(top_n=top_n, lotteries=selected_lotteries)
+        return await asyncio.to_thread(
+            analytics_service.build_possible_results_summary,
+            top_n=top_n,
+            lotteries=selected_lotteries,
+        )
     except Exception:
         snapshot = _default_snapshot("possible-results:default:")
         if snapshot:
@@ -204,7 +212,12 @@ async def get_backtesting(
 
     selected_lotteries = [item.strip() for item in lotteries.split(",")] if lotteries else None
     try:
-        return analytics_service.build_backtesting_summary(days=days, top_n=top_n, lotteries=selected_lotteries)
+        return await asyncio.to_thread(
+            analytics_service.build_backtesting_summary,
+            days=days,
+            top_n=top_n,
+            lotteries=selected_lotteries,
+        )
     except Exception:
         snapshot = _default_snapshot("backtesting:default:")
         if snapshot:
@@ -214,7 +227,7 @@ async def get_backtesting(
 
 @router.get("/analytics/model-health", response_model=ModelHealthSummary)
 async def get_model_health(current_user: dict = Depends(get_current_user)):
-    return analytics_service.build_model_health_summary()
+    return await asyncio.to_thread(analytics_service.build_model_health_summary)
 
 
 @router.get("/analytics/enjaulados", response_model=EnjauladosResponse)
@@ -222,7 +235,7 @@ async def get_enjaulados(
     force_refresh: bool = False,
     current_user: dict = Depends(get_current_user),
 ):
-    return analytics_service.build_enjaulados_summary(force_refresh=force_refresh)
+    return await asyncio.to_thread(analytics_service.build_enjaulados_summary, force_refresh=force_refresh)
 
 
 @router.get("/analytics/strategies", response_model=StrategiesResponse)
@@ -230,7 +243,7 @@ async def get_strategies(
     force_refresh: bool = False,
     current_user: dict = Depends(get_current_user),
 ):
-    return analytics_service.build_strategies_summary(force_refresh=force_refresh)
+    return await asyncio.to_thread(analytics_service.build_strategies_summary, force_refresh=force_refresh)
 
 
 @router.get("/analytics/today-review", response_model=PredictionReviewSummary)
@@ -238,7 +251,8 @@ async def get_today_review(
     draw_date: str | None = None,
     current_user: dict = Depends(get_current_user),
 ):
-    return analytics_service.build_today_prediction_review(
+    return await asyncio.to_thread(
+        analytics_service.build_today_prediction_review,
         draw_date=None if not draw_date else date.fromisoformat(draw_date)
     )
 

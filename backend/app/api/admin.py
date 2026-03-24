@@ -1,3 +1,4 @@
+import asyncio
 import csv
 from io import BytesIO, StringIO
 
@@ -280,7 +281,7 @@ async def send_possible_results_to_telegram(
 async def get_system_status(current_user: dict = Depends(require_admin)):
     from app.main import scheduler
 
-    return analytics_service.build_system_status(scheduler_running=scheduler.running)
+    return await asyncio.to_thread(analytics_service.build_system_status, scheduler_running=scheduler.running)
 
 
 @router.get("/system/quality", response_model=QualityReportResponse)
@@ -289,7 +290,11 @@ async def get_system_quality(
     lotteries: str | None = None,
     current_user: dict = Depends(require_admin),
 ):
-    return analytics_service.build_quality_report(days=days, lotteries=_parse_lotteries(lotteries))
+    return await asyncio.to_thread(
+        analytics_service.build_quality_report,
+        days=days,
+        lotteries=_parse_lotteries(lotteries),
+    )
 
 
 @router.get("/system/audit", response_model=list[AuditLogEntry])
@@ -297,13 +302,13 @@ async def get_system_audit(
     limit: int = Query(default=50, ge=1, le=200),
     current_user: dict = Depends(require_admin),
 ):
-    return analytics_service.build_audit_entries(limit=limit)
+    return await asyncio.to_thread(analytics_service.build_audit_entries, limit=limit)
 
 
 @router.get("/users", response_model=list[UserResponse])
 async def list_users(current_user: dict = Depends(require_admin)):
     users = []
-    for user in db_service.list_users(limit=None):
+    for user in await asyncio.to_thread(db_service.list_users, limit=None):
         users.append(
             {
                 "id": user["username"],

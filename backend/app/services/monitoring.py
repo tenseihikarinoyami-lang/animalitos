@@ -77,6 +77,16 @@ class MonitoringService:
         today_key = self._today_key()
         return self._snapshot_exists(f"backtesting:default:{today_key}") and self._snapshot_exists(f"model-health:{today_key}")
 
+    def _has_today_operational_snapshots(self) -> bool:
+        today_key = self._today_key()
+        required = (
+            f"overview:{today_key}",
+            f"trends:default:{today_key}",
+            f"possible-results:default:{today_key}",
+            f"today-analysis:{today_key}",
+        )
+        return all(self._snapshot_exists(snapshot_key) for snapshot_key in required)
+
     def enforce_data_retention(self) -> dict[str, int]:
         cutoff_date = self._retention_cutoff_date()
         stats = db_service.prune_historical_data(cutoff_date=cutoff_date)
@@ -251,6 +261,8 @@ class MonitoringService:
 
     def schedule_recovery_check(self, trigger: str = "user-request") -> bool:
         if not settings.scheduler_self_heal_enabled:
+            return False
+        if settings.use_external_scheduler:
             return False
         if self._self_heal_task and not self._self_heal_task.done():
             return False
@@ -513,6 +525,8 @@ class MonitoringService:
     def start_default_snapshot_warmup(self) -> bool:
         if not settings.startup_snapshot_warmup_enabled:
             return False
+        if self._has_today_operational_snapshots():
+            return False
         task_active = bool(self._snapshot_warmup_task and not self._snapshot_warmup_task.done())
         if task_active:
             return False
@@ -665,13 +679,17 @@ class MonitoringService:
         run_id = db_service.save_ingestion_run(ingestion_run)
         ingestion_run["id"] = run_id
 
-        retention_stats = self.enforce_data_retention()
+        retention_stats = await asyncio.to_thread(self.enforce_data_retention)
 
-        overview = analytics_service.build_dashboard_overview()
-        trends = analytics_service.build_trends(days=settings.analytics_default_days)
-        previous_summary = self._latest_prediction_summary()
-        possible_results = analytics_service.build_possible_results_summary(previous_summary=previous_summary)
-        self._persist_default_snapshots(
+        overview = await asyncio.to_thread(analytics_service.build_dashboard_overview)
+        trends = await asyncio.to_thread(analytics_service.build_trends, days=settings.analytics_default_days)
+        previous_summary = await asyncio.to_thread(self._latest_prediction_summary)
+        possible_results = await asyncio.to_thread(
+            analytics_service.build_possible_results_summary,
+            previous_summary=previous_summary,
+        )
+        await asyncio.to_thread(
+            self._persist_default_snapshots,
             overview=overview,
             trends=trends,
             possible_results=possible_results,
@@ -867,7 +885,7 @@ class MonitoringService:
         }
         run["id"] = db_service.save_ingestion_run(run)
 
-        retention_stats = self.enforce_data_retention()
+        retention_stats = await asyncio.to_thread(self.enforce_data_retention)
 
         if progress_callback:
             progress_callback(
@@ -884,11 +902,18 @@ class MonitoringService:
                 ingestion_run_id=run["id"],
             )
 
-        previous_summary = self._latest_prediction_summary()
-        self._persist_default_snapshots(
-            overview=analytics_service.build_dashboard_overview(),
-            trends=analytics_service.build_trends(days=settings.analytics_default_days),
-            possible_results=analytics_service.build_possible_results_summary(previous_summary=previous_summary),
+        previous_summary = await asyncio.to_thread(self._latest_prediction_summary)
+        overview = await asyncio.to_thread(analytics_service.build_dashboard_overview)
+        trends = await asyncio.to_thread(analytics_service.build_trends, days=settings.analytics_default_days)
+        possible_results = await asyncio.to_thread(
+            analytics_service.build_possible_results_summary,
+            previous_summary=previous_summary,
+        )
+        await asyncio.to_thread(
+            self._persist_default_snapshots,
+            overview=overview,
+            trends=trends,
+            possible_results=possible_results,
             persist_backtesting=False,
         )
         self.start_backtesting_snapshot_refresh()
@@ -1056,13 +1081,15 @@ class MonitoringService:
 
     async def build_today_analysis(self, force_refresh: bool = False):
         observed_payload = await scraper_service.fetch_today_results()
-        analysis = analytics_service.build_today_analysis(
+        analysis = await asyncio.to_thread(
+            analytics_service.build_today_analysis,
             observed_results=observed_payload.get("results", []),
             reference_local=local_now(),
             force_refresh=force_refresh,
         )
         today_key = local_now().date().isoformat()
-        db_service.save_analytics_snapshot(
+        await asyncio.to_thread(
+            db_service.save_analytics_snapshot,
             snapshot_key=f"today-analysis:{today_key}",
             snapshot=analysis.model_dump(),
         )
@@ -1085,11 +1112,11 @@ class MonitoringService:
         return sent
 
     async def send_daily_summary(self) -> bool:
-        analytics_service.ensure_daily_external_snapshots(force_refresh=False)
-        analytics_service.train_models_and_promote()
-        overview = analytics_service.build_dashboard_overview()
-        review_summary = analytics_service.build_today_prediction_review()
-        model_health = analytics_service.build_model_health_summary()
+        await asyncio.to_thread(analytics_service.ensure_daily_external_snapshots, force_refresh=False)
+        await asyncio.to_thread(analytics_service.train_models_and_promote)
+        overview = await asyncio.to_thread(analytics_service.build_dashboard_overview)
+        review_summary = await asyncio.to_thread(analytics_service.build_today_prediction_review)
+        model_health = await asyncio.to_thread(analytics_service.build_model_health_summary)
         sent = await telegram_service.send_daily_summary(
             overview.model_dump(),
             review_summary.model_dump(),
@@ -1114,7 +1141,8 @@ class MonitoringService:
         previous_summary: dict | None = None,
         summary=None,
     ) -> dict:
-        summary = summary or analytics_service.build_possible_results_summary(
+        summary = summary or await asyncio.to_thread(
+            analytics_service.build_possible_results_summary,
             top_n=top_n,
             lotteries=lotteries,
             previous_summary=previous_summary,
@@ -1139,8 +1167,8 @@ class MonitoringService:
             "summary": summary_payload,
             "telegram_sent": sent,
         }
-        prediction_run_id = db_service.save_prediction_run(run_payload)
-        backtesting_snapshot = db_service.get_latest_analytics_snapshot("backtesting:default:")
+        prediction_run_id = await asyncio.to_thread(db_service.save_prediction_run, run_payload)
+        backtesting_snapshot = await asyncio.to_thread(db_service.get_latest_analytics_snapshot, "backtesting:default:")
         if not backtesting_snapshot:
             self.start_backtesting_snapshot_refresh()
         self._record_scheduler_heartbeat(
@@ -1174,7 +1202,12 @@ class MonitoringService:
         }
 
     async def send_due_pre_draw_alerts(self, summary=None) -> dict:
-        summary = summary or analytics_service.build_possible_results_summary(previous_summary=self._latest_prediction_summary())
+        if summary is None:
+            previous_summary = await asyncio.to_thread(self._latest_prediction_summary)
+            summary = await asyncio.to_thread(
+                analytics_service.build_possible_results_summary,
+                previous_summary=previous_summary,
+            )
         alerts = self._collect_pre_draw_alerts(summary)
         if not alerts:
             self._record_scheduler_heartbeat(
@@ -1193,7 +1226,8 @@ class MonitoringService:
             "kind": "pre-draw-alert",
             "alerted_window_keys": [item["window_key"] for item in alerts],
         }
-        prediction_run_id = db_service.save_prediction_run(
+        prediction_run_id = await asyncio.to_thread(
+            db_service.save_prediction_run,
             {
                 "generated_at": summary.generated_at,
                 "delivery_status": "sent" if sent else "failed",
