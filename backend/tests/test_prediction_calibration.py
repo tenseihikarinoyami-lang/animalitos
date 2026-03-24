@@ -143,3 +143,93 @@ def test_ensure_champion_models_can_skip_training(monkeypatch):
 
     assert result
     assert all(item["status"] == "missing" for item in result.values())
+
+
+def test_today_review_replays_missing_prediction_windows(monkeypatch):
+    draw_date = date(2026, 3, 23)
+    results = [
+        {
+            "canonical_lottery_name": "Lotto Activo",
+            "draw_date": draw_date,
+            "draw_time_local": "08:00",
+            "draw_datetime_utc": datetime(2026, 3, 23, 12, 0, tzinfo=timezone.utc),
+            "animal_number": 12,
+            "animal_name": "Caballo",
+        },
+        {
+            "canonical_lottery_name": "Lotto Activo",
+            "draw_date": draw_date,
+            "draw_time_local": "09:00",
+            "draw_datetime_utc": datetime(2026, 3, 23, 13, 0, tzinfo=timezone.utc),
+            "animal_number": 17,
+            "animal_name": "Pavo",
+        },
+    ]
+    persisted_reviews = []
+
+    class FakeWindow:
+        def __init__(self, draw_time_local: str, payload: dict):
+            self.draw_time_local = draw_time_local
+            self._payload = payload
+
+        def model_dump(self):
+            return self._payload
+
+    monkeypatch.setattr(
+        "app.services.analytics.db_service.get_results",
+        lambda **_kwargs: results,
+    )
+    monkeypatch.setattr("app.services.analytics.db_service.get_prediction_runs", lambda limit=500: [])
+    monkeypatch.setattr(
+        "app.services.analytics.db_service.get_schedules",
+        lambda: [{"canonical_lottery_name": "Lotto Activo", "times": ["08:00", "09:00"]}],
+    )
+    monkeypatch.setattr(
+        "app.services.analytics.db_service.save_prediction_window_reviews",
+        lambda rows: persisted_reviews.extend(rows),
+    )
+    monkeypatch.setattr(
+        analytics_service,
+        "_build_candidates_for_reference",
+        lambda **_kwargs: SimpleNamespace(
+            draw_predictions=[
+                FakeWindow(
+                    "09:00",
+                    {
+                        "draw_time_local": "09:00",
+                        "segment_key": "lotto-activo-hourly",
+                        "confidence_band": "media",
+                        "stability_score": 0.72,
+                        "candidates": [
+                            {
+                                "animal_number": 22,
+                                "animal_name": "Camello",
+                                "confidence_band": "media",
+                                "stability_score": 0.72,
+                                "segment_key": "lotto-activo-hourly",
+                                "champion_model_key": "segment-model-1",
+                                "strongest_signals": [{"key": "strategy_consensus", "label": "Consenso"}],
+                            },
+                            {
+                                "animal_number": 17,
+                                "animal_name": "Pavo",
+                                "confidence_band": "media",
+                                "stability_score": 0.72,
+                                "segment_key": "lotto-activo-hourly",
+                                "champion_model_key": "segment-model-1",
+                                "strongest_signals": [{"key": "overdue_gap", "label": "Rezago"}],
+                            },
+                        ],
+                    },
+                )
+            ]
+        ),
+    )
+
+    review = analytics_service.build_today_prediction_review(draw_date=draw_date)
+
+    assert review.evaluated_draws == 1
+    assert review.hit_top_3 == 1
+    assert any(window.prediction_delivery_status == "replay" for window in review.windows if window.prediction_available)
+    assert persisted_reviews
+    assert persisted_reviews[0]["canonical_lottery_name"] == "Lotto Activo"

@@ -2503,6 +2503,15 @@ class AnalyticsService:
                             matched_run = run
 
             if not matched_window:
+                replay_window, replay_run = self._replay_prediction_window_for_result(
+                    result=result,
+                    all_day_results=target_results,
+                )
+                if replay_window:
+                    matched_window = replay_window
+                    matched_run = replay_run
+
+            if not matched_window:
                 windows.append(
                     PredictionReviewWindow(
                         canonical_lottery_name=lottery_name,
@@ -2752,6 +2761,60 @@ class AnalyticsService:
             windows=sorted(windows, key=lambda item: (item.draw_date, item.draw_time_local, item.canonical_lottery_name)),
             notes=notes,
         )
+
+    def _replay_prediction_window_for_result(
+        self,
+        *,
+        result: dict[str, Any],
+        all_day_results: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        lottery_name = result["canonical_lottery_name"]
+        draw_time_local = result["draw_time_local"]
+        actual_dt = self._coerce_datetime(result["draw_datetime_utc"])
+        if actual_dt is None:
+            return None, None
+
+        history = [
+            item
+            for item in all_day_results
+            if item["canonical_lottery_name"] == lottery_name
+            and self._coerce_datetime(item["draw_datetime_utc"]) < actual_dt
+        ]
+        if not history:
+            return None, None
+
+        market_history = [
+            item for item in all_day_results if self._coerce_datetime(item["draw_datetime_utc"]) < actual_dt
+        ]
+        schedules = {item["canonical_lottery_name"]: item for item in db_service.get_schedules()}
+        schedule = schedules.get(lottery_name, {"times": []})
+        reference_local = actual_dt.astimezone(local_now().tzinfo) - timedelta(minutes=1)
+        candidate_summary = self._build_candidates_for_reference(
+            lottery_name=lottery_name,
+            results=history,
+            schedule=schedule,
+            reference_local=reference_local,
+            top_n=max(settings.prediction_default_top_n, 5),
+            market_results=market_history,
+        )
+        if not candidate_summary:
+            return None, None
+
+        matched_window = next(
+            (
+                window.model_dump() if hasattr(window, "model_dump") else window
+                for window in candidate_summary.draw_predictions
+                if window.draw_time_local == draw_time_local
+            ),
+            None,
+        )
+        if not matched_window:
+            return None, None
+
+        return matched_window, {
+            "generated_at": reference_local.astimezone(timezone.utc),
+            "delivery_status": "replay",
+        }
 
     def _build_external_strategy_context(self, reference_local: datetime) -> dict[str, Any]:
         target_date = reference_local.date()

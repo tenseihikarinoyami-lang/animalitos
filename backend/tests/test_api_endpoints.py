@@ -43,6 +43,9 @@ def test_register_forces_regular_user_role(client):
 
     assert response.status_code == 201
     assert response.json()["role"] == "user"
+    assert response.json()["must_change_password"] is False
+    assert response.json()["created_at"] is not None
+    assert response.json()["password_changed_at"] is not None
 
 
 def test_dashboard_and_history_routes(client, admin_headers):

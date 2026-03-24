@@ -90,6 +90,9 @@ async def register(user_data: UserCreate, request: Request, _: None = Depends(li
     payload["password"] = get_password_hash(user_data.password)
     payload["role"] = "user"
     payload["is_active"] = True
+    payload["created_at"] = utc_now()
+    payload["must_change_password"] = False
+    payload["password_changed_at"] = utc_now()
     user_id = db_service.save_user(payload)
 
     return {
@@ -100,7 +103,7 @@ async def register(user_data: UserCreate, request: Request, _: None = Depends(li
         "role": payload["role"],
         "is_active": True,
         "created_at": payload.get("created_at"),
-        "must_change_password": False,
+        "must_change_password": payload.get("must_change_password", False),
         "password_changed_at": payload.get("password_changed_at"),
     }
 
