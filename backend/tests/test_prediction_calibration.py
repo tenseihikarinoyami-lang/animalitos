@@ -129,3 +129,17 @@ def test_today_operating_mode_can_turn_aggressive_when_everything_aligns():
 
     assert operating_mode == "aggressive"
     assert notes
+
+
+def test_ensure_champion_models_can_skip_training(monkeypatch):
+    monkeypatch.setattr("app.services.analytics.db_service.get_champion_model", lambda _segment_key: None)
+
+    def fail_training(*_args, **_kwargs):
+        raise AssertionError("training should not run on a lightweight request path")
+
+    monkeypatch.setattr(analytics_service, "train_models_and_promote", fail_training)
+
+    result = analytics_service.ensure_champion_models(train_if_missing=False)
+
+    assert result
+    assert all(item["status"] == "missing" for item in result.values())

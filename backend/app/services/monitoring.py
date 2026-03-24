@@ -26,6 +26,7 @@ class MonitoringService:
         self._self_heal_task: asyncio.Task | None = None
         self._backtesting_snapshot_task: asyncio.Task | None = None
         self._external_signal_snapshot_task: asyncio.Task | None = None
+        self._snapshot_warmup_task: asyncio.Task | None = None
         self._self_heal_lock = asyncio.Lock()
 
     @staticmethod
@@ -58,6 +59,23 @@ class MonitoringService:
     def _retention_cutoff_date(self):
         retention_days = max(int(settings.results_retention_days or 30), 1)
         return local_now().date() - timedelta(days=retention_days - 1)
+
+    @staticmethod
+    def _snapshot_exists(snapshot_key: str) -> bool:
+        return bool(db_service.get_analytics_snapshot(snapshot_key))
+
+    def _today_key(self) -> str:
+        return local_now().date().isoformat()
+
+    def _has_today_external_snapshots(self) -> bool:
+        today_key = self._today_key()
+        return self._snapshot_exists(f"external-enjaulados:{today_key}") and self._snapshot_exists(
+            f"external-strategies:{today_key}"
+        )
+
+    def _has_today_backtesting_snapshots(self) -> bool:
+        today_key = self._today_key()
+        return self._snapshot_exists(f"backtesting:default:{today_key}") and self._snapshot_exists(f"model-health:{today_key}")
 
     def enforce_data_retention(self) -> dict[str, int]:
         cutoff_date = self._retention_cutoff_date()
@@ -461,6 +479,46 @@ class MonitoringService:
         self._external_signal_snapshot_task = asyncio.create_task(self._run_external_signal_snapshot_refresh())
         return True
 
+    async def _run_default_snapshot_warmup(self) -> None:
+        try:
+            await asyncio.to_thread(analytics_service.ensure_daily_external_snapshots, local_now().date(), False)
+            overview = await asyncio.to_thread(analytics_service.build_dashboard_overview)
+            trends = await asyncio.to_thread(
+                analytics_service.build_trends,
+                days=settings.analytics_default_days,
+            )
+            possible_results = await asyncio.to_thread(analytics_service.build_possible_results_summary)
+            self._persist_default_snapshots(
+                overview=overview,
+                trends=trends,
+                possible_results=possible_results,
+                persist_backtesting=False,
+            )
+            await self.build_today_analysis(force_refresh=False)
+            log_event(
+                logging.getLogger(__name__),
+                logging.INFO,
+                "default_snapshots_warmed",
+            )
+        except Exception as exc:
+            log_event(
+                logging.getLogger(__name__),
+                logging.ERROR,
+                "default_snapshot_warmup_failed",
+                error=str(exc),
+            )
+        finally:
+            self._snapshot_warmup_task = None
+
+    def start_default_snapshot_warmup(self) -> bool:
+        if not settings.startup_snapshot_warmup_enabled:
+            return False
+        task_active = bool(self._snapshot_warmup_task and not self._snapshot_warmup_task.done())
+        if task_active:
+            return False
+        self._snapshot_warmup_task = asyncio.create_task(self._run_default_snapshot_warmup())
+        return True
+
     def _latest_prediction_summary(self) -> dict | None:
         latest_prediction = db_service.get_latest_prediction_run()
         return latest_prediction.get("summary") if latest_prediction else None
@@ -619,8 +677,10 @@ class MonitoringService:
             possible_results=possible_results,
             persist_backtesting=False,
         )
-        self.start_backtesting_snapshot_refresh()
-        self.start_external_signal_snapshot_refresh()
+        if not self._has_today_backtesting_snapshots():
+            self.start_backtesting_snapshot_refresh()
+        if save_stats["new_count"] > 0 or not self._has_today_external_snapshots():
+            self.start_external_signal_snapshot_refresh()
 
         if notify and save_stats["new_results"]:
             await telegram_service.send_results_digest(save_stats["new_results"], ingestion_run)

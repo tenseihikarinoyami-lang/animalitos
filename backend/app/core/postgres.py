@@ -170,6 +170,21 @@ def _normalize_database_url(url: str) -> str:
     return url
 
 
+def _build_connect_args() -> dict:
+    connect_args: dict[str, int | str] = {}
+    if settings.db_connect_timeout_seconds > 0:
+        connect_args["connect_timeout"] = settings.db_connect_timeout_seconds
+
+    options = []
+    if settings.db_statement_timeout_ms > 0:
+        options.append(f"-c statement_timeout={settings.db_statement_timeout_ms}")
+    if settings.db_lock_timeout_ms > 0:
+        options.append(f"-c lock_timeout={settings.db_lock_timeout_ms}")
+    if options:
+        connect_args["options"] = " ".join(options)
+    return connect_args
+
+
 def get_engine() -> Engine | None:
     global _engine
     if not settings.use_postgres or not settings.database_url:
@@ -178,6 +193,11 @@ def get_engine() -> Engine | None:
         _engine = create_engine(
             _normalize_database_url(settings.database_url),
             pool_pre_ping=True,
+            pool_recycle=settings.db_pool_recycle_seconds,
+            pool_timeout=settings.db_pool_timeout_seconds,
+            pool_size=settings.db_pool_size,
+            max_overflow=settings.db_max_overflow,
+            connect_args=_build_connect_args(),
             future=True,
         )
     return _engine

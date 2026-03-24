@@ -1,0 +1,19 @@
+name: Animalitos Keepalive
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wake backend health endpoint
+        run: |
+          curl --fail-with-body --silent --show-error --retry 3 --retry-delay 10 --retry-all-errors --max-time 45 \
+            "https://animalitos-ufry.onrender.com/health" > /dev/null

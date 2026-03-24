@@ -99,9 +99,9 @@ async def register(user_data: UserCreate, request: Request, _: None = Depends(li
         "full_name": user_data.full_name,
         "role": payload["role"],
         "is_active": True,
-        "created_at": db_service.get_user(user_data.username).get("created_at"),
+        "created_at": payload.get("created_at"),
         "must_change_password": False,
-        "password_changed_at": db_service.get_user(user_data.username).get("password_changed_at"),
+        "password_changed_at": payload.get("password_changed_at"),
     }
 
 

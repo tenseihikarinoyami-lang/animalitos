@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     scheduler_service_token: str = ""
     backend_public_url: str = ""
     frontend_public_url: str = ""
+    db_connect_timeout_seconds: int = 8
+    db_statement_timeout_ms: int = 12000
+    db_lock_timeout_ms: int = 5000
+    db_pool_timeout_seconds: int = 8
+    db_pool_recycle_seconds: int = 300
+    db_pool_size: int = 3
+    db_max_overflow: int = 0
+    startup_snapshot_warmup_enabled: bool = True
 
     @property
     def cors_origins_list(self) -> list[str]:

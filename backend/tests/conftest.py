@@ -15,31 +15,39 @@ def reset_mock_database():
     monitoring_service._backfill_task = None
     monitoring_service._backtesting_snapshot_task = None
     monitoring_service._external_signal_snapshot_task = None
+    monitoring_service._snapshot_warmup_task = None
     db_service.pg_engine = None
     db_service.reset_mock_state()
     rate_limiter.reset()
     original_password = settings.bootstrap_admin_password
     original_allow_insecure = settings.allow_insecure_dev_admin
     original_provider = settings.database_provider
+    original_warmup_enabled = settings.startup_snapshot_warmup_enabled
     original_start_backtesting_snapshot_refresh = monitoring_service.start_backtesting_snapshot_refresh
     original_start_external_signal_snapshot_refresh = monitoring_service.start_external_signal_snapshot_refresh
+    original_start_default_snapshot_warmup = monitoring_service.start_default_snapshot_warmup
     settings.bootstrap_admin_password = "admin123"
     settings.allow_insecure_dev_admin = False
     settings.database_provider = "mock"
+    settings.startup_snapshot_warmup_enabled = False
     monitoring_service.start_backtesting_snapshot_refresh = lambda: False
     monitoring_service.start_external_signal_snapshot_refresh = lambda: False
+    monitoring_service.start_default_snapshot_warmup = lambda: False
     yield
     monitoring_service._backfill_task = None
     monitoring_service._backtesting_snapshot_task = None
     monitoring_service._external_signal_snapshot_task = None
+    monitoring_service._snapshot_warmup_task = None
     db_service.pg_engine = None
     db_service.reset_mock_state()
     rate_limiter.reset()
     settings.bootstrap_admin_password = original_password
     settings.allow_insecure_dev_admin = original_allow_insecure
     settings.database_provider = original_provider
+    settings.startup_snapshot_warmup_enabled = original_warmup_enabled
     monitoring_service.start_backtesting_snapshot_refresh = original_start_backtesting_snapshot_refresh
     monitoring_service.start_external_signal_snapshot_refresh = original_start_external_signal_snapshot_refresh
+    monitoring_service.start_default_snapshot_warmup = original_start_default_snapshot_warmup
 
 
 @pytest.fixture

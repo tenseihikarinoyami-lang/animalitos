@@ -103,13 +103,13 @@ async def lifespan(app: FastAPI):
     db_service.ensure_default_schedules()
     monitoring_service.enforce_data_retention()
 
-    scheduler.add_job(
-        scheduled_refresh,
-        trigger=IntervalTrigger(minutes=settings.scheduler_interval_minutes),
-        id="scheduled_refresh",
-        replace_existing=True,
-    )
     if not settings.use_external_scheduler:
+        scheduler.add_job(
+            scheduled_refresh,
+            trigger=IntervalTrigger(minutes=settings.scheduler_interval_minutes),
+            id="scheduled_refresh",
+            replace_existing=True,
+        )
         scheduler.add_job(
             scheduled_possible_results,
             trigger=CronTrigger(hour=8, minute=5, timezone=ZoneInfo(settings.app_timezone)),
@@ -141,6 +141,7 @@ async def lifespan(app: FastAPI):
             replace_existing=True,
         )
     scheduler.start()
+    monitoring_service.start_default_snapshot_warmup()
     yield
     if scheduler.running:
         scheduler.shutdown(wait=False)

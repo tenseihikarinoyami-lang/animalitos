@@ -1727,12 +1727,20 @@ class AnalyticsService:
 
         return training_summary
 
-    def ensure_champion_models(self) -> dict[str, dict[str, Any]]:
+    def ensure_champion_models(self, train_if_missing: bool = True) -> dict[str, dict[str, Any]]:
         missing_segments = [segment_key for segment_key in self.SEGMENT_KEYS if not db_service.get_champion_model(segment_key)]
         if not missing_segments:
             return {
                 segment_key: {
                     "status": "ready",
+                    "model_key": (db_service.get_champion_model(segment_key) or {}).get("model_key"),
+                }
+                for segment_key in self.SEGMENT_KEYS
+            }
+        if not train_if_missing:
+            return {
+                segment_key: {
+                    "status": "missing" if segment_key in missing_segments else "ready",
                     "model_key": (db_service.get_champion_model(segment_key) or {}).get("model_key"),
                 }
                 for segment_key in self.SEGMENT_KEYS
@@ -1957,7 +1965,7 @@ class AnalyticsService:
         full_top_n = max(requested_top_n, self.FULL_TOP_N)
         reference_local = reference_local or local_now()
         self.ensure_daily_external_snapshots(target_date=reference_local.date(), force_refresh=False)
-        self.ensure_champion_models()
+        self.ensure_champion_models(train_if_missing=False)
         schedules = {item["canonical_lottery_name"]: item for item in db_service.get_schedules()}
         selected_lotteries = self._normalize_lotteries(lotteries)
         champion_versions = {
