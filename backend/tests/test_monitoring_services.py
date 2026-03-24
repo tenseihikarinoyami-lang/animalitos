@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from app.core.config import settings
+from app.models.schemas import PossibleResultsSummary, ScoreComponent
 from app.models.schemas import BackfillRequest
 from app.services.analytics import analytics_service
 from app.services.database import db_service
@@ -425,3 +426,35 @@ async def test_pre_draw_alerts_send_once(monkeypatch):
     assert first["alerts"]
     assert second["sent"] is False
     assert len(sent_alerts) == 1
+
+
+@pytest.mark.asyncio
+async def test_send_today_possible_results_uses_cached_default_snapshot(monkeypatch):
+    summary = PossibleResultsSummary(
+        generated_at=datetime(2026, 3, 24, tzinfo=timezone.utc),
+        reference_date=date(2026, 3, 24),
+        reference_time_local="07:55",
+        methodology_version="ops-hybrid-ranking-v10",
+        ensemble_version="hybrid-ensemble-v3",
+        methodology="test",
+        disclaimer="test",
+        history_days_covered=30,
+        history_results_considered=100,
+        score_components=[ScoreComponent(key="slot_recent_14d", label="Slot", weight=0.12)],
+        lotteries=[],
+    )
+    captured_runs = []
+
+    monkeypatch.setattr(monitoring_service, "_default_possible_results_snapshot", lambda: summary)
+    monkeypatch.setattr(
+        "app.services.monitoring.analytics_service.build_possible_results_summary",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("should use cached default snapshot")),
+    )
+    monkeypatch.setattr("app.services.monitoring.db_service.save_prediction_run", lambda payload: captured_runs.append(payload) or "run-1")
+    monkeypatch.setattr("app.services.monitoring.db_service.get_latest_analytics_snapshot", lambda _prefix: {"cached": True})
+
+    response = await monitoring_service.send_today_possible_results(preview_only=True)
+
+    assert response["details"]["prediction_run_id"] == "run-1"
+    assert response["details"]["preview_only"] is True
+    assert captured_runs

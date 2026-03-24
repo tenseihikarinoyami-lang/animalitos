@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from app.core.config import settings
 from app.core.logging import log_event
-from app.models.schemas import BackfillRequest
+from app.models.schemas import BackfillRequest, PossibleResultsSummary
 from app.services.analytics import analytics_service
 from app.services.database import db_service
 from app.services.schedule import expected_draws_by_now, local_now, parse_time_local, utc_now
@@ -546,6 +546,15 @@ class MonitoringService:
     def _latest_prediction_summary(self) -> dict | None:
         latest_prediction = db_service.get_latest_prediction_run()
         return latest_prediction.get("summary") if latest_prediction else None
+
+    def _default_possible_results_snapshot(self) -> PossibleResultsSummary | None:
+        today_key = local_now().date().isoformat()
+        snapshot = db_service.get_analytics_snapshot(f"possible-results:default:{today_key}") or db_service.get_latest_analytics_snapshot(
+            "possible-results:default:"
+        )
+        if not snapshot:
+            return None
+        return PossibleResultsSummary.model_validate(snapshot)
 
     def _recent_pre_draw_window_keys(self) -> set[str]:
         keys = set()
@@ -1155,12 +1164,21 @@ class MonitoringService:
         previous_summary: dict | None = None,
         summary=None,
     ) -> dict:
-        summary = summary or await asyncio.to_thread(
-            analytics_service.build_possible_results_summary,
-            top_n=top_n,
-            lotteries=lotteries,
-            previous_summary=previous_summary,
-        )
+        if summary is None:
+            should_use_default_snapshot = (
+                previous_summary is None
+                and not lotteries
+                and (top_n is None or top_n == settings.prediction_default_top_n)
+            )
+            if should_use_default_snapshot:
+                summary = await asyncio.to_thread(self._default_possible_results_snapshot)
+            if summary is None:
+                summary = await asyncio.to_thread(
+                    analytics_service.build_possible_results_summary,
+                    top_n=top_n,
+                    lotteries=lotteries,
+                    previous_summary=previous_summary,
+                )
         sent = False
         delivery_status = "preview"
         if not preview_only:
