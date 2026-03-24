@@ -105,8 +105,14 @@ class DatabaseService:
             try:
                 with self.pg_engine.begin() as connection:
                     for schedule in schedules:
-                        statement = pg_insert(draw_schedules_table).values(**schedule).on_conflict_do_nothing(
-                            index_elements=[draw_schedules_table.c.canonical_lottery_name]
+                        statement = pg_insert(draw_schedules_table).values(**schedule).on_conflict_do_update(
+                            index_elements=[draw_schedules_table.c.canonical_lottery_name],
+                            set_={
+                                "display_name": schedule["display_name"],
+                                "times": schedule["times"],
+                                "source_pages": schedule["source_pages"],
+                                "status": schedule["status"],
+                            },
                         )
                         connection.execute(statement)
                 return
