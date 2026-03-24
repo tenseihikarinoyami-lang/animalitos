@@ -179,6 +179,10 @@ def test_today_review_replays_missing_prediction_windows(monkeypatch):
         "app.services.analytics.db_service.get_results",
         lambda **_kwargs: results,
     )
+    monkeypatch.setattr(
+        "app.services.analytics.local_now",
+        lambda: datetime(2026, 3, 23, 12, 30, tzinfo=timezone.utc),
+    )
     monkeypatch.setattr("app.services.analytics.db_service.get_prediction_runs", lambda limit=500: [])
     monkeypatch.setattr(
         "app.services.analytics.db_service.get_schedules",
@@ -233,3 +237,51 @@ def test_today_review_replays_missing_prediction_windows(monkeypatch):
     assert any(window.prediction_delivery_status == "replay" for window in review.windows if window.prediction_available)
     assert persisted_reviews
     assert persisted_reviews[0]["canonical_lottery_name"] == "Lotto Activo"
+
+
+def test_historical_today_review_uses_persisted_rows_without_replay(monkeypatch):
+    draw_date = date(2026, 3, 23)
+    persisted_reviews = [
+        {
+            "review_key": "2026-03-23:Lotto Activo:08:00",
+            "segment_key": "lotto-activo-hourly",
+            "canonical_lottery_name": "Lotto Activo",
+            "draw_date": draw_date,
+            "draw_time_local": "08:00",
+            "actual_animal_number": 12,
+            "actual_animal_name": "Caballo",
+            "predicted_at": datetime(2026, 3, 23, 11, 59, tzinfo=timezone.utc),
+            "model_key": "segment-model-1",
+            "ensemble_version": "hybrid-ensemble-v3",
+            "lead_signal_key": "strategy_consensus",
+            "confidence_band": "media",
+            "stability_score": 0.67,
+            "hit_top_1": False,
+            "hit_top_3": True,
+            "hit_top_5": True,
+            "payload": {
+                "predicted_top_1_number": 22,
+                "predicted_top_1_name": "Camello",
+                "top_1": [22],
+                "top_3": [22, 12, 17],
+                "top_5": [22, 12, 17, 30, 31],
+                "actual_rank": 2,
+            },
+        }
+    ]
+
+    monkeypatch.setattr(
+        "app.services.analytics.db_service.get_prediction_window_reviews",
+        lambda **_kwargs: persisted_reviews,
+    )
+    monkeypatch.setattr(
+        "app.services.analytics.db_service.get_results",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("historical review should not replay results in request path")),
+    )
+
+    review = analytics_service.build_today_prediction_review(draw_date=draw_date)
+
+    assert review.evaluated_draws == 1
+    assert review.hit_top_3 == 1
+    assert review.windows[0].prediction_delivery_status == "persisted-review"
+    assert "prediction_window_reviews persistidos" in review.notes[0]

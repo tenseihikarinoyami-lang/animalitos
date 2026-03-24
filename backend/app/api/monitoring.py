@@ -251,7 +251,11 @@ async def get_today_review(
     draw_date: str | None = None,
     current_user: dict = Depends(get_current_user),
 ):
-    if not draw_date:
+    if draw_date:
+        snapshot = db_service.get_analytics_snapshot(f"today-review:{draw_date}")
+        if snapshot:
+            return snapshot
+    else:
         snapshot = _default_snapshot("today-review:")
         if snapshot:
             return snapshot

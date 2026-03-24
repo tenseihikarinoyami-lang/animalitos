@@ -506,6 +506,42 @@ def test_today_review_route_prefers_cached_snapshot(client, admin_headers, monke
     assert response.json()["evaluated_draws"] == 10
 
 
+def test_today_review_route_prefers_exact_historical_snapshot(client, admin_headers, monkeypatch):
+    generated_at = datetime(2026, 3, 23, tzinfo=timezone.utc)
+
+    def fake_snapshot(snapshot_key):
+        if snapshot_key == "today-review:2026-03-23":
+            return {
+                "generated_at": generated_at,
+                "draw_date": "2026-03-23",
+                "methodology_version": "ops-hybrid-ranking-v10",
+                "evaluated_draws": 49,
+                "hit_top_1": 2,
+                "hit_top_3": 5,
+                "hit_top_5": 7,
+                "hit_top_1_rate": 0.0408,
+                "hit_top_3_rate": 0.102,
+                "hit_top_5_rate": 0.1429,
+                "by_lottery": [],
+                "by_hour": [],
+                "by_signal": [],
+                "windows": [],
+                "notes": ["historical snapshot"],
+            }
+        return None
+
+    monkeypatch.setattr("app.api.monitoring.db_service.get_analytics_snapshot", fake_snapshot)
+    monkeypatch.setattr(
+        "app.api.monitoring.analytics_service.build_today_prediction_review",
+        lambda draw_date=None: (_ for _ in ()).throw(AssertionError("historical snapshot should avoid rebuild")),
+    )
+
+    response = client.get("/api/analytics/today-review?draw_date=2026-03-23", headers=admin_headers)
+
+    assert response.status_code == 200
+    assert response.json()["evaluated_draws"] == 49
+
+
 def test_today_analysis_route_returns_operational_snapshot(client, admin_headers, monkeypatch):
     generated_at = datetime(2026, 3, 22, tzinfo=timezone.utc)
 
