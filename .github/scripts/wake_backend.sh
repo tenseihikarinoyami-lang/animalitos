@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BACKEND_URL="${BACKEND_URL%/}"
+RECOVERY_ATTEMPTS="${RECOVERY_ATTEMPTS:-18}"
+RECOVERY_WAIT_SECONDS="${RECOVERY_WAIT_SECONDS:-20}"
+
+ping_backend() {
+  curl --fail-with-body --silent --show-error \
+    --retry 2 --retry-delay 8 --retry-all-errors --max-time 25 \
+    "${BACKEND_URL}/ping" > /dev/null
+}
+
+if ping_backend; then
+  exit 0
+fi
+
+echo "Initial ping failed, retrying after short wait..."
+sleep 20
+if ping_backend; then
+  exit 0
+fi
+
+if [ -n "${RENDER_DEPLOY_HOOK_URL:-}" ]; then
+  echo "Backend still unavailable. Triggering Render deploy hook..."
+  curl --fail-with-body --silent --show-error \
+    --retry 2 --retry-delay 10 --retry-all-errors --max-time 30 \
+    -X POST "${RENDER_DEPLOY_HOOK_URL}" > /dev/null
+
+  for attempt in $(seq 1 "${RECOVERY_ATTEMPTS}"); do
+    echo "Waiting for backend recovery after redeploy (${attempt}/${RECOVERY_ATTEMPTS})..."
+    sleep "${RECOVERY_WAIT_SECONDS}"
+    if ping_backend; then
+      echo "Backend recovered after redeploy."
+      exit 0
+    fi
+  done
+
+  echo "Backend did not recover after deploy hook retries." >&2
+  exit 1
+fi
+
+echo "Backend still unavailable and no deploy hook is configured." >&2
+exit 1
