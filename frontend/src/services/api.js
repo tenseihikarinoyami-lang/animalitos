@@ -6,8 +6,9 @@ const backendOrigin = configuredBaseUrl.endsWith('/api')
   : configuredBaseUrl
 const pingUrl = backendOrigin ? `${backendOrigin}/ping` : '/ping'
 const REQUEST_TIMEOUT_MS = 15000
-const WARMUP_TIMEOUT_MS = 15000
-const BACKEND_COOLDOWN_MS = 45000
+const WARMUP_TIMEOUT_MS = 8000
+const WARMUP_TOTAL_WAIT_MS = 30000
+const BACKEND_COOLDOWN_MS = 12000
 const RETRYABLE_STATUS_CODES = new Set([502, 503, 504])
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -46,6 +47,12 @@ function markBackendDegraded() {
 
 function isBackendCoolingDown() {
   return backendState.status === 'degraded' && Date.now() < backendState.nextRetryAt
+}
+
+function normalizePingStatus(payload = {}) {
+  if (payload.status === 'starting') return 'starting'
+  if (payload.status === 'degraded' || payload.degraded) return 'degraded'
+  return 'ok'
 }
 
 function shouldWarmupAndRetry(error) {
@@ -179,15 +186,36 @@ api.warmup = async ({ force = false } = {}) => {
   }
 
   backendState.warmupPromise = (async () => {
+    const deadline = Date.now() + WARMUP_TOTAL_WAIT_MS
+    let waitMs = 1200
     try {
-      await axios.get(pingUrl, {
-        timeout: WARMUP_TIMEOUT_MS,
-        headers: {
-          'Cache-Control': 'no-cache',
-        },
-      })
-      markBackendHealthy()
-      return true
+      while (Date.now() < deadline) {
+        try {
+          const response = await axios.get(pingUrl, {
+            timeout: WARMUP_TIMEOUT_MS,
+            headers: {
+              'Cache-Control': 'no-cache',
+            },
+          })
+          const status = normalizePingStatus(response.data)
+          if (status === 'ok') {
+            markBackendHealthy()
+            return true
+          }
+          if (status === 'degraded') {
+            markBackendDegraded()
+            return false
+          }
+        } catch (_error) {
+          markBackendDegraded()
+        }
+
+        await sleep(waitMs)
+        waitMs = Math.min(waitMs + 800, 4000)
+      }
+
+      markBackendDegraded()
+      return false
     } catch (_error) {
       markBackendDegraded()
       return false

@@ -42,7 +42,6 @@ class DatabaseService:
         self._users_cache: list[dict[str, Any]] | None = None
         self._ingestion_runs_cache: list[dict[str, Any]] | None = None
         self._audit_logs_cache: list[dict[str, Any]] | None = None
-        self.ensure_default_schedules()
 
     @property
     def is_postgres_mode(self) -> bool:

@@ -47,7 +47,10 @@
       </div>
     </section>
 
-    <p v-if="lotteryStore.error" class="monitor-error">
+    <p v-if="lotteryStore.showingCachedData" class="cache-banner">
+      {{ lotteryStore.error }}
+    </p>
+    <p v-if="lotteryStore.error && !lotteryStore.showingCachedData" class="monitor-error">
       {{ lotteryStore.error }}
     </p>
 
@@ -283,6 +286,15 @@ onUnmounted(() => {
 .monitor-top,
 .prediction-section {
   margin-bottom: 1rem;
+}
+
+.cache-banner {
+  margin: 0 0 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 199, 91, 0.18);
+  background: rgba(255, 184, 76, 0.1);
+  color: #ffd38d;
 }
 
 .monitor-top {

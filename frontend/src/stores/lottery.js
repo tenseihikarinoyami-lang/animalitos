@@ -2,29 +2,77 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import api, { describeApiError } from '@/services/api'
 
+const CACHE_PREFIX = 'animalitos:cache:'
+
+function cacheKey(name) {
+  return `${CACHE_PREFIX}${name}`
+}
+
+function readCache(name) {
+  try {
+    const raw = localStorage.getItem(cacheKey(name))
+    if (!raw) return null
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+function writeCache(name, value) {
+  try {
+    localStorage.setItem(
+      cacheKey(name),
+      JSON.stringify({
+        savedAt: new Date().toISOString(),
+        value,
+      }),
+    )
+  } catch {}
+}
+
 export const useLotteryStore = defineStore('lottery', () => {
-  const overview = ref(null)
-  const results = ref([])
+  const overview = ref(readCache('overview')?.value || null)
+  const results = ref(readCache('results')?.value || [])
   const history = ref([])
-  const schedules = ref([])
-  const trends = ref(null)
-  const possibleResults = ref(null)
-  const enjaulados = ref(null)
-  const strategies = ref(null)
-  const todayReview = ref(null)
-  const todayAnalysis = ref(null)
-  const systemStatus = ref(null)
-  const qualityReport = ref(null)
+  const schedules = ref(readCache('schedules')?.value || [])
+  const trends = ref(readCache('trends')?.value || null)
+  const possibleResults = ref(readCache('possibleResults')?.value || null)
+  const enjaulados = ref(readCache('enjaulados')?.value || null)
+  const strategies = ref(readCache('strategies')?.value || null)
+  const todayReview = ref(readCache('todayReview')?.value || null)
+  const todayAnalysis = ref(readCache('todayAnalysis')?.value || null)
+  const systemStatus = ref(readCache('systemStatus')?.value || null)
+  const qualityReport = ref(readCache('qualityReport')?.value || null)
   const auditLogs = ref([])
-  const backtesting = ref(null)
-  const modelHealth = ref(null)
-  const backfillStatus = ref(null)
+  const backtesting = ref(readCache('backtesting')?.value || null)
+  const modelHealth = ref(readCache('modelHealth')?.value || null)
+  const backfillStatus = ref(readCache('backfillStatus')?.value || null)
   const users = ref([])
   const loading = ref(false)
   const error = ref('')
   const pendingCount = ref(0)
+  const showingCachedData = ref(false)
+  const cachedDataSavedAt = ref(null)
 
-  async function withLoader(fn, options = {}) {
+  function applyCachedValue(name, target) {
+    const cached = readCache(name)
+    if (!cached) return false
+    target.value = cached.value
+    showingCachedData.value = true
+    cachedDataSavedAt.value = cached.savedAt || null
+    error.value = cached.savedAt
+      ? `Mostrando la ultima informacion guardada (${new Date(cached.savedAt).toLocaleString()}) mientras el servidor se recupera.`
+      : 'Mostrando la ultima informacion guardada mientras el servidor se recupera.'
+    return true
+  }
+
+  function rememberFreshData(name, value) {
+    writeCache(name, value)
+    showingCachedData.value = false
+    cachedDataSavedAt.value = new Date().toISOString()
+  }
+
+  async function withLoader(fn, options = {}, onErrorFallback = null) {
     const silent = options.silent === true
     if (!silent) {
       pendingCount.value += 1
@@ -35,7 +83,11 @@ export const useLotteryStore = defineStore('lottery', () => {
       return await fn()
     } catch (err) {
       if (!silent) {
-        error.value = describeApiError(err)
+        const usedCache = typeof onErrorFallback === 'function' ? onErrorFallback(err) : false
+        if (!usedCache) {
+          showingCachedData.value = false
+          error.value = describeApiError(err)
+        }
       }
       return null
     } finally {
@@ -50,8 +102,9 @@ export const useLotteryStore = defineStore('lottery', () => {
     return withLoader(async () => {
       const response = await api.get('/dashboard/overview')
       overview.value = response.data
+      rememberFreshData('overview', response.data)
       return response.data
-    })
+    }, {}, () => applyCachedValue('overview', overview))
   }
 
   async function fetchTodayResults(lotteryName = null, limit = 200) {
@@ -60,8 +113,11 @@ export const useLotteryStore = defineStore('lottery', () => {
       if (lotteryName) params.lottery_name = lotteryName
       const response = await api.get('/results/today', { params })
       results.value = response.data.items
+      if (!lotteryName) {
+        rememberFreshData('results', response.data.items)
+      }
       return response.data
-    })
+    }, {}, () => (!lotteryName ? applyCachedValue('results', results) : false))
   }
 
   async function fetchResults(filters = {}) {
@@ -84,56 +140,67 @@ export const useLotteryStore = defineStore('lottery', () => {
     return withLoader(async () => {
       const response = await api.get('/schedules')
       schedules.value = response.data
+      rememberFreshData('schedules', response.data)
       return response.data
-    }, options)
+    }, options, () => applyCachedValue('schedules', schedules))
   }
 
   async function fetchTrends(params = {}, options = {}) {
     return withLoader(async () => {
       const response = await api.get('/analytics/trends', { params })
       trends.value = response.data
+      if (!params.lottery_name && (params.days === undefined || params.days === null)) {
+        rememberFreshData('trends', response.data)
+      }
       return response.data
-    }, options)
+    }, options, () => applyCachedValue('trends', trends))
   }
 
   async function fetchPossibleResults(params = {}, options = {}) {
     return withLoader(async () => {
       const response = await api.get('/analytics/possible-results', { params })
       possibleResults.value = response.data
+      if (!params.lotteries) {
+        rememberFreshData('possibleResults', response.data)
+      }
       return response.data
-    }, options)
+    }, options, () => applyCachedValue('possibleResults', possibleResults))
   }
 
   async function fetchEnjaulados(params = {}, options = {}) {
     return withLoader(async () => {
       const response = await api.get('/analytics/enjaulados', { params })
       enjaulados.value = response.data
+      rememberFreshData('enjaulados', response.data)
       return response.data
-    }, options)
+    }, options, () => applyCachedValue('enjaulados', enjaulados))
   }
 
   async function fetchStrategies(params = {}, options = {}) {
     return withLoader(async () => {
       const response = await api.get('/analytics/strategies', { params })
       strategies.value = response.data
+      rememberFreshData('strategies', response.data)
       return response.data
-    }, options)
+    }, options, () => applyCachedValue('strategies', strategies))
   }
 
   async function fetchTodayReview(params = {}, options = {}) {
     return withLoader(async () => {
       const response = await api.get('/analytics/today-review', { params })
       todayReview.value = response.data
+      rememberFreshData('todayReview', response.data)
       return response.data
-    }, options)
+    }, options, () => applyCachedValue('todayReview', todayReview))
   }
 
   async function fetchTodayAnalysis(params = {}, options = {}) {
     return withLoader(async () => {
       const response = await api.get('/analytics/today-analysis', { params })
       todayAnalysis.value = response.data
+      rememberFreshData('todayAnalysis', response.data)
       return response.data
-    }, options)
+    }, options, () => applyCachedValue('todayAnalysis', todayAnalysis))
   }
 
   async function refreshResults() {
@@ -148,6 +215,9 @@ export const useLotteryStore = defineStore('lottery', () => {
     return withLoader(async () => {
       const response = await api.post('/admin/backfill', payload)
       backfillStatus.value = response.data.details?.backfill || backfillStatus.value
+      if (backfillStatus.value) {
+        rememberFreshData('backfillStatus', backfillStatus.value)
+      }
       return response.data
     })
   }
@@ -156,8 +226,9 @@ export const useLotteryStore = defineStore('lottery', () => {
     return withLoader(async () => {
       const response = await api.get('/admin/backfill/status')
       backfillStatus.value = response.data
+      rememberFreshData('backfillStatus', response.data)
       return response.data
-    }, options)
+    }, options, () => applyCachedValue('backfillStatus', backfillStatus))
   }
 
   async function testTelegram() {
@@ -180,16 +251,18 @@ export const useLotteryStore = defineStore('lottery', () => {
     return withLoader(async () => {
       const response = await api.get('/admin/system/status')
       systemStatus.value = response.data
+      rememberFreshData('systemStatus', response.data)
       return response.data
-    })
+    }, {}, () => applyCachedValue('systemStatus', systemStatus))
   }
 
   async function fetchQualityReport(params = {}) {
     return withLoader(async () => {
       const response = await api.get('/admin/system/quality', { params })
       qualityReport.value = response.data
+      rememberFreshData('qualityReport', response.data)
       return response.data
-    })
+    }, {}, () => applyCachedValue('qualityReport', qualityReport))
   }
 
   async function fetchAuditLogs(params = {}) {
@@ -204,16 +277,18 @@ export const useLotteryStore = defineStore('lottery', () => {
     return withLoader(async () => {
       const response = await api.get('/analytics/backtesting', { params })
       backtesting.value = response.data
+      rememberFreshData('backtesting', response.data)
       return response.data
-    }, options)
+    }, options, () => applyCachedValue('backtesting', backtesting))
   }
 
   async function fetchModelHealth(options = {}) {
     return withLoader(async () => {
       const response = await api.get('/analytics/model-health')
       modelHealth.value = response.data
+      rememberFreshData('modelHealth', response.data)
       return response.data
-    }, options)
+    }, options, () => applyCachedValue('modelHealth', modelHealth))
   }
 
   async function fetchUsers() {
@@ -290,6 +365,8 @@ export const useLotteryStore = defineStore('lottery', () => {
     users,
     loading,
     error,
+    showingCachedData,
+    cachedDataSavedAt,
     fetchOverview,
     fetchTodayResults,
     fetchResults,

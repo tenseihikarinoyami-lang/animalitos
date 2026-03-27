@@ -14,7 +14,14 @@ from zoneinfo import ZoneInfo
 from app.api import admin, auth, monitoring
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger, log_event
-from app.core.runtime import register_startup_issue, reset_startup_issues, runtime_status_snapshot
+from app.core.runtime import (
+    mark_database_status,
+    mark_startup_phase,
+    refresh_database_status,
+    register_startup_issue,
+    reset_startup_issues,
+    runtime_status_snapshot,
+)
 from app.core.security import get_password_hash
 from app.services.analytics import analytics_service
 from app.services.database import db_service
@@ -91,107 +98,143 @@ async def scheduled_weekly_recovery_backfill() -> None:
     await monitoring_service.run_weekly_recovery_backfill()
 
 
+def configure_internal_scheduler() -> None:
+    if settings.use_external_scheduler:
+        return
+    if scheduler.running:
+        return
+
+    scheduler.add_job(
+        scheduled_refresh,
+        trigger=IntervalTrigger(minutes=settings.scheduler_interval_minutes),
+        id="scheduled_refresh",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        scheduled_possible_results,
+        trigger=CronTrigger(hour=8, minute=5, timezone=ZoneInfo(settings.app_timezone)),
+        id="scheduled_possible_results",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        scheduled_today_analysis_opening,
+        trigger=CronTrigger(hour=9, minute=35, timezone=ZoneInfo(settings.app_timezone)),
+        id="scheduled_today_analysis_opening",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        scheduled_today_analysis_midday,
+        trigger=CronTrigger(hour=13, minute=35, timezone=ZoneInfo(settings.app_timezone)),
+        id="scheduled_today_analysis_midday",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        scheduled_daily_summary,
+        trigger=CronTrigger(hour=21, minute=15, timezone=ZoneInfo(settings.app_timezone)),
+        id="scheduled_daily_summary",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        scheduled_weekly_recovery_backfill,
+        trigger=CronTrigger(day_of_week="sun", hour=4, minute=10, timezone=ZoneInfo(settings.app_timezone)),
+        id="scheduled_weekly_recovery_backfill",
+        replace_existing=True,
+    )
+    scheduler.start()
+
+
+async def run_startup_bootstrap() -> None:
+    expected_provider = settings.database_provider.lower()
+    database_required = expected_provider in {"postgres", "supabase"}
+    retry_delay_seconds = max(min(settings.db_connect_timeout_seconds, 12), 4)
+    database_warning_logged = False
+
+    while True:
+        database_ready = await asyncio.to_thread(refresh_database_status)
+        if not database_required or database_ready:
+            startup_steps = [
+                ("admin-bootstrap", ensure_admin_user),
+                ("default-schedules", db_service.ensure_default_schedules),
+                ("data-retention", monitoring_service.enforce_data_retention),
+            ]
+            for component, callback in startup_steps:
+                try:
+                    await asyncio.to_thread(callback)
+                except Exception as exc:
+                    register_startup_issue(component, f"{component} fallo durante el arranque.", exc)
+                    log_event(
+                        logger,
+                        level=40,
+                        event="startup_step_failed",
+                        component=component,
+                        error=str(exc),
+                    )
+
+            try:
+                monitoring_service.start_default_snapshot_warmup()
+            except Exception as exc:
+                register_startup_issue("snapshot-warmup", "El precalentamiento de snapshots fallo durante el arranque.", exc)
+                log_event(
+                    logger,
+                    level=30,
+                    event="startup_snapshot_warmup_failed",
+                    error=str(exc),
+                )
+            mark_startup_phase("ready")
+            return
+
+        if not database_warning_logged:
+            register_startup_issue(
+                "database",
+                "Supabase/Postgres no estuvo disponible durante el arranque. El servicio seguira en modo degradado.",
+            )
+            log_event(
+                logger,
+                level=40,
+                event="startup_database_unavailable",
+                provider=expected_provider,
+                action="continue_in_degraded_mode",
+            )
+            database_warning_logged = True
+
+        mark_database_status(False)
+        mark_startup_phase("degraded")
+        await asyncio.sleep(retry_delay_seconds)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging(debug=settings.debug)
     reset_startup_issues()
+    mark_startup_phase("starting")
 
     expected_provider = settings.database_provider.lower()
     if expected_provider not in {"mock", "supabase", "postgres"}:
         raise RuntimeError("DATABASE_PROVIDER must be one of: mock, supabase, postgres.")
-    database_required = expected_provider in {"postgres", "supabase"}
-    database_ready = (not database_required) or db_service.is_postgres_mode
 
-    if database_required and not database_ready:
-        register_startup_issue(
-            "database",
-            "Supabase/Postgres no estuvo disponible durante el arranque. El servicio seguira en modo degradado.",
-        )
+    if expected_provider == "mock":
+        mark_database_status(True)
+
+    try:
+        configure_internal_scheduler()
+    except Exception as exc:
+        register_startup_issue("scheduler", "El scheduler interno no pudo inicializarse.", exc)
         log_event(
             logger,
             level=40,
-            event="startup_database_unavailable",
-            provider=expected_provider,
-            action="continue_in_degraded_mode",
+            event="startup_scheduler_failed",
+            error=str(exc),
         )
+
+    startup_task = None
+    if expected_provider == "mock":
+        await run_startup_bootstrap()
     else:
-        startup_steps = [
-            ("admin-bootstrap", ensure_admin_user),
-            ("default-schedules", db_service.ensure_default_schedules),
-            ("data-retention", monitoring_service.enforce_data_retention),
-        ]
-        for component, callback in startup_steps:
-            try:
-                callback()
-            except Exception as exc:
-                register_startup_issue(component, f"{component} fallo durante el arranque.", exc)
-                log_event(
-                    logger,
-                    level=40,
-                    event="startup_step_failed",
-                    component=component,
-                    error=str(exc),
-                )
-
-        if not settings.use_external_scheduler:
-            try:
-                scheduler.add_job(
-                    scheduled_refresh,
-                    trigger=IntervalTrigger(minutes=settings.scheduler_interval_minutes),
-                    id="scheduled_refresh",
-                    replace_existing=True,
-                )
-                scheduler.add_job(
-                    scheduled_possible_results,
-                    trigger=CronTrigger(hour=8, minute=5, timezone=ZoneInfo(settings.app_timezone)),
-                    id="scheduled_possible_results",
-                    replace_existing=True,
-                )
-                scheduler.add_job(
-                    scheduled_today_analysis_opening,
-                    trigger=CronTrigger(hour=9, minute=35, timezone=ZoneInfo(settings.app_timezone)),
-                    id="scheduled_today_analysis_opening",
-                    replace_existing=True,
-                )
-                scheduler.add_job(
-                    scheduled_today_analysis_midday,
-                    trigger=CronTrigger(hour=13, minute=35, timezone=ZoneInfo(settings.app_timezone)),
-                    id="scheduled_today_analysis_midday",
-                    replace_existing=True,
-                )
-                scheduler.add_job(
-                    scheduled_daily_summary,
-                    trigger=CronTrigger(hour=21, minute=15, timezone=ZoneInfo(settings.app_timezone)),
-                    id="scheduled_daily_summary",
-                    replace_existing=True,
-                )
-                scheduler.add_job(
-                    scheduled_weekly_recovery_backfill,
-                    trigger=CronTrigger(day_of_week="sun", hour=4, minute=10, timezone=ZoneInfo(settings.app_timezone)),
-                    id="scheduled_weekly_recovery_backfill",
-                    replace_existing=True,
-                )
-                scheduler.start()
-            except Exception as exc:
-                register_startup_issue("scheduler", "El scheduler interno no pudo inicializarse.", exc)
-                log_event(
-                    logger,
-                    level=40,
-                    event="startup_scheduler_failed",
-                    error=str(exc),
-                )
-
-        try:
-            monitoring_service.start_default_snapshot_warmup()
-        except Exception as exc:
-            register_startup_issue("snapshot-warmup", "El precalentamiento de snapshots fallo durante el arranque.", exc)
-            log_event(
-                logger,
-                level=30,
-                event="startup_snapshot_warmup_failed",
-                error=str(exc),
-            )
+        startup_task = asyncio.create_task(run_startup_bootstrap())
+    app.state.startup_task = startup_task
     yield
+    if startup_task and not startup_task.done():
+        startup_task.cancel()
     if scheduler.running:
         scheduler.shutdown(wait=False)
 
@@ -220,6 +263,27 @@ app.include_router(admin.router, prefix="/api")
 @app.get("/health", tags=["Health"])
 async def health_check(response: Response):
     runtime_status = runtime_status_snapshot()
+    if runtime_status.get("starting"):
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {
+            "status": "starting",
+            "database_connected": runtime_status["database_connected"],
+            "database_provider": settings.database_provider.lower(),
+            "scheduler_running": scheduler.running,
+            "scheduler_mode": "external" if settings.use_external_scheduler else "internal",
+            "scheduler_stale": None,
+            "scheduler_last_received_at": None,
+            "scheduler_last_completed_at": None,
+            "scheduler_last_status": "starting",
+            "scheduler_last_kind": None,
+            "telegram_configured": bool(settings.telegram_bot_token and settings.telegram_chat_id),
+            "latest_successful_run_at": None,
+            "latest_backfill_at": None,
+            "total_results": 0,
+            "warnings": [issue["message"] for issue in runtime_status["startup_issues"]],
+            "startup_issues": runtime_status["startup_issues"],
+            "timestamp": utc_now(),
+        }
     if runtime_status["degraded"]:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {
@@ -270,8 +334,10 @@ async def health_check(response: Response):
 @app.get("/ping", tags=["Health"])
 async def ping():
     runtime_status = runtime_status_snapshot()
+    status_value = "starting" if runtime_status.get("starting") else ("degraded" if runtime_status["degraded"] else "ok")
     return {
-        "status": "degraded" if runtime_status["degraded"] else "ok",
+        "status": status_value,
+        "starting": runtime_status.get("starting", False),
         "degraded": runtime_status["degraded"],
         "startup_issues": runtime_status["startup_issues"],
         "timestamp": utc_now(),

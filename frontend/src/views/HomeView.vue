@@ -15,6 +15,12 @@
     </template>
 
     <section class="split-grid hero-grid">
+      <p v-if="lotteryStore.showingCachedData" class="cache-banner col-12">
+        {{ lotteryStore.error }}
+      </p>
+      <p v-if="lotteryStore.error && !lotteryStore.showingCachedData" class="cache-banner col-12 danger">
+        {{ lotteryStore.error }}
+      </p>
       <article class="glass-card section-card col-7 hero-panel">
         <p class="eyebrow">Siguiente ventana</p>
         <div v-if="windowOptions.length" class="window-selector">
@@ -290,6 +296,21 @@ onMounted(async () => {
 .hero-grid,
 .dashboard-metrics {
   margin-bottom: 1rem;
+}
+
+.cache-banner {
+  margin: 0 0 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 199, 91, 0.18);
+  background: rgba(255, 184, 76, 0.1);
+  color: #ffd38d;
+}
+
+.cache-banner.danger {
+  border-color: rgba(255, 126, 126, 0.18);
+  background: rgba(173, 58, 58, 0.16);
+  color: #ffc3c3;
 }
 
 .hero-panel {
