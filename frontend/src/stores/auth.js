@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import api from '@/services/api'
+import api, { describeApiError } from '@/services/api'
 
 function loadStoredUser() {
   try {
@@ -33,16 +33,16 @@ export const useAuthStore = defineStore('auth', () => {
       const response = await api.post('/auth/login', { username, password })
       user.value = response.data.user
       token.value = response.data.access_token
-      
+
       localStorage.setItem('token', response.data.access_token)
       persistUser(response.data.user)
       api.setToken(response.data.access_token)
-      
+
       return { success: true }
     } catch (error) {
-      return { 
-        success: false, 
-        error: error.response?.data?.detail || 'Error al iniciar sesión' 
+      return {
+        success: false,
+        error: describeApiError(error),
       }
     }
   }
@@ -52,9 +52,9 @@ export const useAuthStore = defineStore('auth', () => {
       const response = await api.post('/auth/register', userData)
       return { success: true, data: response.data }
     } catch (error) {
-      return { 
-        success: false, 
-        error: error.response?.data?.detail || 'Error al registrar' 
+      return {
+        success: false,
+        error: describeApiError(error),
       }
     }
   }
@@ -62,14 +62,14 @@ export const useAuthStore = defineStore('auth', () => {
   async function fetchUser(expectedToken = token.value) {
     if (!expectedToken) return
     bootstrapRequestToken = expectedToken
-    
+
     try {
       api.setToken(expectedToken)
       const response = await api.get('/auth/me')
       if (token.value !== expectedToken) return
       user.value = response.data
       persistUser(response.data)
-    } catch (error) {
+    } catch (_error) {
       if (token.value === expectedToken) {
         logout()
       }
@@ -92,7 +92,7 @@ export const useAuthStore = defineStore('auth', () => {
     } catch (error) {
       return {
         success: false,
-        error: error.response?.data?.detail || 'Error al cambiar la contrasena',
+        error: describeApiError(error),
       }
     }
   }
@@ -106,7 +106,6 @@ export const useAuthStore = defineStore('auth', () => {
     api.setToken(null)
   }
 
-  // Initialize user if token exists
   if (token.value) {
     api.setToken(token.value)
     fetchUser()
@@ -121,6 +120,6 @@ export const useAuthStore = defineStore('auth', () => {
     register,
     changePassword,
     logout,
-    fetchUser
+    fetchUser,
   }
 })

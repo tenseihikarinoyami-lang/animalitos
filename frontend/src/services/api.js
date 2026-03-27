@@ -22,6 +22,10 @@ function isWarmupRequest(url = '') {
   return url.includes('/ping') || url.includes('/health')
 }
 
+function isLoginRequest(url = '') {
+  return url.includes('/auth/login')
+}
+
 function isIdempotentRequest(config = {}) {
   const method = String(config.method || 'get').toLowerCase()
   return ['get', 'head', 'options'].includes(method)
@@ -50,12 +54,13 @@ function shouldWarmupAndRetry(error) {
   const responseStatus = error.response?.status
   const isNetworkError = !error.response
   const isRetryableStatus = RETRYABLE_STATUS_CODES.has(responseStatus)
+  const isRetryableLogin = isLoginRequest(requestUrl)
 
   if (config.__warmupRetried || isWarmupRequest(requestUrl)) {
     return false
   }
 
-  if (!isIdempotentRequest(config)) {
+  if (!isIdempotentRequest(config) && !isRetryableLogin) {
     return false
   }
 
@@ -100,7 +105,8 @@ const api = axios.create({
 
 api.interceptors.request.use(
   (config) => {
-    if (isBackendCoolingDown() && !isWarmupRequest(String(config.url || ''))) {
+    const requestUrl = String(config.url || '')
+    if (isBackendCoolingDown() && !isWarmupRequest(requestUrl) && !isLoginRequest(requestUrl)) {
       const error = new Error('Backend temporarily unavailable')
       error.code = 'BACKEND_UNAVAILABLE'
       error.config = config
@@ -129,10 +135,11 @@ api.interceptors.response.use(
     const requestUrl = String(config.url || '')
     const isAuthRequest = requestUrl.includes('/auth/login') || requestUrl.includes('/auth/register')
     const isWarmupCall = isWarmupRequest(requestUrl)
+    const isLoginCall = isLoginRequest(requestUrl)
 
-    if (shouldWarmupAndRetry(error) && !isBackendCoolingDown()) {
+    if (shouldWarmupAndRetry(error) && (!isBackendCoolingDown() || isLoginCall)) {
       config.__warmupRetried = true
-      const warmed = await api.warmup()
+      const warmed = await api.warmup({ force: isLoginCall })
       if (warmed) {
         await sleep(1200)
         return api.request(config)
@@ -162,12 +169,12 @@ api.setToken = (token) => {
   }
 }
 
-api.warmup = async () => {
+api.warmup = async ({ force = false } = {}) => {
   if (backendState.warmupPromise) {
     return backendState.warmupPromise
   }
 
-  if (isBackendCoolingDown()) {
+  if (!force && isBackendCoolingDown()) {
     return false
   }
 
