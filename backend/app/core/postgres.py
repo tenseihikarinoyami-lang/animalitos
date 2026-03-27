@@ -1,3 +1,5 @@
+from time import monotonic
+
 from sqlalchemy import Boolean, Column, Date, DateTime, Float, Integer, MetaData, String, Table, Text, create_engine
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Engine
@@ -160,6 +162,9 @@ admin_audit_logs_table = Table(
 )
 
 _engine: Engine | None = None
+postgres_initialized = False
+_last_init_attempt_monotonic: float | None = None
+POSTGRES_INIT_RETRY_SECONDS = 30.0
 
 
 def _normalize_database_url(url: str) -> str:
@@ -203,17 +208,32 @@ def get_engine() -> Engine | None:
     return _engine
 
 
-def initialize_postgres() -> bool:
+def initialize_postgres(force_retry: bool = False) -> bool:
+    global _engine, postgres_initialized, _last_init_attempt_monotonic
+
     engine = get_engine()
     if engine is None:
+        postgres_initialized = False
         return False
 
+    attempt_at = monotonic()
+    if (
+        not force_retry
+        and _last_init_attempt_monotonic is not None
+        and (attempt_at - _last_init_attempt_monotonic) < POSTGRES_INIT_RETRY_SECONDS
+    ):
+        return postgres_initialized
+
+    _last_init_attempt_monotonic = attempt_at
     try:
         metadata.create_all(engine)
+        postgres_initialized = True
         return True
     except Exception as exc:
+        postgres_initialized = False
+        _engine = None
         print(f"Postgres initialization error: {exc}")
         return False
 
 
-postgres_initialized = initialize_postgres()
+postgres_initialized = initialize_postgres(force_retry=True)

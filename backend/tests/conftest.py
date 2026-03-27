@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from app.core.runtime import reset_startup_issues
 from app.main import app, scheduler
 from app.services.database import db_service
 from app.services.monitoring import monitoring_service
@@ -12,6 +13,7 @@ from app.services.rate_limit import rate_limiter
 
 @pytest.fixture(autouse=True)
 def reset_mock_database():
+    reset_startup_issues()
     monitoring_service._backfill_task = None
     monitoring_service._backtesting_snapshot_task = None
     monitoring_service._external_signal_snapshot_task = None
@@ -34,6 +36,7 @@ def reset_mock_database():
     monitoring_service.start_external_signal_snapshot_refresh = lambda: False
     monitoring_service.start_default_snapshot_warmup = lambda: False
     yield
+    reset_startup_issues()
     monitoring_service._backfill_task = None
     monitoring_service._backtesting_snapshot_task = None
     monitoring_service._external_signal_snapshot_task = None

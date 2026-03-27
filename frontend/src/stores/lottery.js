@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import api from '@/services/api'
+import api, { describeApiError } from '@/services/api'
 
 export const useLotteryStore = defineStore('lottery', () => {
   const overview = ref(null)
@@ -35,7 +35,7 @@ export const useLotteryStore = defineStore('lottery', () => {
       return await fn()
     } catch (err) {
       if (!silent) {
-        error.value = err.response?.data?.detail || err.message || 'Unexpected error'
+        error.value = describeApiError(err)
       }
       return null
     } finally {

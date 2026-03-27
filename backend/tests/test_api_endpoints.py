@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 
+from app.core.runtime import register_startup_issue
 from app.services.database import db_service
 from app.services.schedule import local_now
 
@@ -35,6 +36,46 @@ def test_ping_route_is_public(client):
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_health_route_reports_degraded_mode_when_database_is_unavailable(client, monkeypatch):
+    register_startup_issue("database", "Supabase/Postgres no estuvo disponible durante el arranque.")
+    monkeypatch.setattr(
+        "app.main.runtime_status_snapshot",
+        lambda: {
+            "database_required": True,
+            "database_connected": False,
+            "degraded": True,
+            "startup_issues": [
+                {
+                    "component": "database",
+                    "message": "Supabase/Postgres no estuvo disponible durante el arranque.",
+                }
+            ],
+        },
+    )
+
+    response = client.get("/health")
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "degraded"
+    assert response.json()["startup_issues"][0]["component"] == "database"
+
+
+def test_protected_routes_return_503_when_database_is_unavailable(client, monkeypatch):
+    monkeypatch.setattr("app.core.runtime.database_operational", lambda: False)
+
+    login_response = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "admin123"},
+    )
+    overview_response = client.get(
+        "/api/dashboard/overview",
+        headers={"Authorization": "Bearer fake-token"},
+    )
+
+    assert login_response.status_code == 503
+    assert overview_response.status_code == 503
 
 
 def test_register_forces_regular_user_role(client):

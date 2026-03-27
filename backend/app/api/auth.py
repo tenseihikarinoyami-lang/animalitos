@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import settings
+from app.core.runtime import require_operational_database
 from app.core.security import create_access_token, decode_access_token, get_password_hash, verify_password
 from app.models.schemas import PasswordChangeRequest, Token, UserCreate, UserLogin, UserResponse
 from app.services.database import db_service
@@ -13,7 +14,7 @@ from app.services.rate_limit import limit_auth_requests
 from app.services.schedule import utc_now
 
 
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+router = APIRouter(prefix="/auth", tags=["Authentication"], dependencies=[Depends(require_operational_database)])
 security = HTTPBearer()
 
 

@@ -14,4 +14,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["sh", "-c", "python bootstrap_admin.py && python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "python bootstrap_admin.py || echo 'bootstrap_admin.py failed; continuing with API startup'; python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

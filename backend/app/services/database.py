@@ -6,17 +6,16 @@ from uuid import uuid4
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app.core import postgres as postgres_core
 from app.core.config import settings
 from app.core.lottery_catalog import DEFAULT_DRAW_SCHEDULES
 from app.core.postgres import (
     admin_audit_logs_table,
     analytics_snapshots_table,
     draw_schedules_table,
-    get_engine,
     ingestion_runs_table,
     model_training_examples_table,
     model_versions_table,
-    postgres_initialized,
     prediction_window_reviews_table,
     prediction_runs_table,
     results_table,
@@ -27,7 +26,7 @@ from app.services.schedule import utc_now
 
 class DatabaseService:
     def __init__(self) -> None:
-        self.pg_engine = get_engine()
+        self.pg_engine = postgres_core.get_engine()
         self._mock_results: dict[str, dict[str, Any]] = {}
         self._mock_users: dict[str, dict[str, Any]] = {}
         self._mock_ingestion_runs: dict[str, dict[str, Any]] = {}
@@ -47,7 +46,22 @@ class DatabaseService:
 
     @property
     def is_postgres_mode(self) -> bool:
-        return bool(settings.use_postgres and postgres_initialized and self.pg_engine is not None)
+        if not settings.use_postgres:
+            return False
+
+        if self.pg_engine is None:
+            self.pg_engine = postgres_core.get_engine()
+
+        if self.pg_engine is None:
+            return False
+
+        if not postgres_core.postgres_initialized:
+            if not postgres_core.initialize_postgres():
+                self.pg_engine = None
+                return False
+            self.pg_engine = postgres_core.get_engine()
+
+        return bool(postgres_core.postgres_initialized and self.pg_engine is not None)
 
     @property
     def is_mock_mode(self) -> bool:

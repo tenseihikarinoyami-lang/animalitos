@@ -9,6 +9,7 @@ from reportlab.pdfgen import canvas
 
 from app.api.auth import require_admin
 from app.core.config import settings
+from app.core.runtime import require_operational_database
 from app.core.security import get_password_hash
 from app.models.schemas import (
     AdminResetPasswordRequest,
@@ -31,7 +32,11 @@ from app.services.rate_limit import limit_admin_requests
 from app.services.telegram import telegram_service
 
 
-router = APIRouter(prefix="/admin", tags=["Admin"], dependencies=[Depends(limit_admin_requests)])
+router = APIRouter(
+    prefix="/admin",
+    tags=["Admin"],
+    dependencies=[Depends(limit_admin_requests), Depends(require_operational_database)],
+)
 
 
 def _client_host(request: Request) -> str:

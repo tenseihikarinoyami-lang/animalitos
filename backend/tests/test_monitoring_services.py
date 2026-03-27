@@ -180,7 +180,7 @@ def test_explicit_postgres_failure_does_not_fallback_to_mock(monkeypatch):
     original_database_url = settings.database_url
     original_engine = db_service.pg_engine
     try:
-        monkeypatch.setattr("app.services.database.postgres_initialized", True)
+        monkeypatch.setattr("app.core.postgres.postgres_initialized", True)
         settings.database_provider = "postgres"
         settings.database_url = "postgresql://example"
         db_service.pg_engine = BrokenEngine()

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from app.api.auth import get_current_user
 from app.core.config import settings
+from app.core.runtime import require_operational_database
 from app.models.schemas import (
     AnalyticsTrends,
     BacktestingSummary,
@@ -24,7 +25,7 @@ from app.services.monitoring import monitoring_service
 from app.services.schedule import local_now
 
 
-router = APIRouter(tags=["Monitoring"])
+router = APIRouter(tags=["Monitoring"], dependencies=[Depends(require_operational_database)])
 
 
 def require_scheduler_token(x_scheduler_token: str | None = Header(default=None)) -> None:
