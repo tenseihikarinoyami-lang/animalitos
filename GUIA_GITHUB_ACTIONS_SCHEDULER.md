@@ -11,6 +11,7 @@ Esta guia reemplaza `cron-job.org` por GitHub Actions para despertar el backend 
 
 El workflow ya quedo creado en:
 
+- `.github/workflows/keepalive.yml`
 - `.github/workflows/render-scheduler.yml`
 
 ## Secretos que debes cargar en GitHub
@@ -21,7 +22,7 @@ En tu repositorio `animalitos` abre:
 - `Secrets and variables`
 - `Actions`
 
-Crea estos dos secretos:
+Crea estos secretos:
 
 1. `ANIMALITOS_BACKEND_URL`
    - valor:
@@ -31,11 +32,23 @@ Crea estos dos secretos:
    - valor:
    - el mismo que tienes en Render en `SCHEDULER_SERVICE_TOKEN`
 
+3. `ANIMALITOS_RENDER_DEPLOY_HOOK_URL`
+   - valor:
+   - el `Deploy Hook` del servicio en Render
+   - sirve para que el workflow fuerce una recuperacion si el backend entra en `502`
+
+## Recomendado para recuperacion automatica
+
+- `ANIMALITOS_RENDER_DEPLOY_HOOK_URL` es el mas importante para evitar quedarte pegado cuando Render despierta mal.
+- Si no lo configuras, el workflow igual hara `ping`, pero no podra forzar una recuperacion del servicio.
+
 ## Como activarlo
 
 1. Entra a `Actions` en GitHub.
 2. Si GitHub te pide habilitar Actions, pulsa `I understand my workflows, go ahead and enable them`.
-3. Verifica que aparezca el workflow `Animalitos Render Scheduler`.
+3. Verifica que aparezcan estos workflows:
+   - `Animalitos Keepalive`
+   - `Animalitos Render Scheduler`
 4. Ejecuta una corrida manual:
    - `Run workflow`
    - target: `refresh`
@@ -89,7 +102,15 @@ Los fallos mas comunes son:
 - Render en cold start mas lento de lo normal
 - timeout temporal de la pagina fuente `loteriadehoy.com`
 
-## Importante
+## Limite real del plan Free de Render
+
+Aunque este workflow ayuda a mitigar cold starts y a reanimar el backend, **no elimina por completo** los problemas del plan `free`.
+
+Render documenta que:
+- los web services `free` se duermen tras `15 minutos` de inactividad
+- los servicios pueden reiniciarse en cualquier momento por mantenimiento de plataforma
+
+Si quieres que el backend no duerma para usuarios reales, el cambio de fondo es mover el servicio a `Starter` o superior.
 
 Aunque GitHub Actions sirve mejor que `cron-job.org` para dejar esto versionado y auditable dentro del repo, el backend tambien quedo con:
 

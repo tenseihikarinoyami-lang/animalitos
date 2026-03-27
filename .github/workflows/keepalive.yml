@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      BACKEND_URL: https://animalitos-ufry.onrender.com
+      BACKEND_URL: ${{ secrets.ANIMALITOS_BACKEND_URL }}
       RENDER_DEPLOY_HOOK_URL: ${{ secrets.ANIMALITOS_RENDER_DEPLOY_HOOK_URL }}
     steps:
       - name: Checkout repository

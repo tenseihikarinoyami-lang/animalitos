@@ -5,8 +5,17 @@ Esta es ahora la ruta recomendada para dejar `Animalitos Monitor` funcionando en
 Arquitectura recomendada:
 - Base de datos: `Supabase Postgres`
 - Backend: `Render Free Web Service`
-- Scheduler externo: `cron-job.org`
+- Scheduler externo: `GitHub Actions`
 - Frontend: `Vercel`
+
+## Limite real del plan Free de Render
+
+El plan `free` de Render es util para arrancar sin costo, pero tiene dos limites importantes:
+
+- el backend se duerme despues de `15 minutos` sin trafico
+- Render puede reiniciar la instancia durante mantenimiento de plataforma
+
+Eso significa que con `free` solo puedes **mitigar** el problema con keepalive y auto-recuperacion. Si quieres eliminar el sleep para usuarios, debes cambiar el servicio a `Starter` o superior.
 
 ## Importante sobre los datos que me pasaste
 - La URL `https://supabase.com/dashboard/project/ubzgjbpyposrsbjzjcew` **no es** tu `DATABASE_URL`.
@@ -23,6 +32,10 @@ Arquitectura recomendada:
   - `POST /api/internal/scheduler/weekly-backfill`
 - El frontend acepta una API remota con `VITE_API_BASE_URL`.
 - Ya existe [`render.yaml`](/D:/Proyectos/animalitos/render.yaml) para desplegar el backend en Render.
+- Ya existen workflows en GitHub para:
+  - despertar el backend cada 5 minutos
+  - reintentar cuando Render responde `502`
+  - disparar tareas programadas del scheduler
 
 ## Paso a paso que debes hacer tu
 
@@ -170,95 +183,63 @@ FRONTEND_PUBLIC_URL=https://TU_FRONTEND.vercel.app
 CORS_ORIGINS=http://localhost:5173,https://TU_FRONTEND.vercel.app
 ```
 
-### 8. Crear scheduler gratis en cron-job.org
-1. Entra a [cron-job.org](https://cron-job.org/en/).
-2. Crea una cuenta.
-3. Crea estos jobs HTTP `POST`.
-4. En headers agrega:
+### 8. Configurar GitHub Actions para keepalive y scheduler
+1. Entra a tu repositorio en GitHub.
+2. Abre `Settings` -> `Secrets and variables` -> `Actions`.
+3. Crea estos secretos:
 
-```http
-X-Scheduler-Token: TU_TOKEN_PRIVADO
+```env
+ANIMALITOS_BACKEND_URL=https://TU_BACKEND.onrender.com
+ANIMALITOS_SCHEDULER_TOKEN=TU_TOKEN_PRIVADO
+ANIMALITOS_RENDER_DEPLOY_HOOK_URL=TU_DEPLOY_HOOK_DE_RENDER
 ```
 
-#### Job 1: refresh frecuente
-- URL: `https://TU_BACKEND.onrender.com/api/internal/scheduler/refresh`
-- Metodo: `POST`
-- Frecuencia recomendada: cada `5 minutos`
+4. Entra a `Actions`.
+5. Habilita Actions si GitHub todavia no esta activado.
+6. Verifica que existan estos workflows:
+   - `Animalitos Keepalive`
+   - `Animalitos Render Scheduler`
 
-Este job tambien ayuda a mantener despierto el backend free de Render.
+### Para que sirve cada workflow
 
-#### Job 2: tendencia de la manana
-- URL: `https://TU_BACKEND.onrender.com/api/internal/scheduler/possible-results`
-- Metodo: `POST`
-- Hora recomendada: `08:05`
-- Zona horaria: `America/Caracas`
+#### Animalitos Keepalive
+- hace `ping` al backend cada `5 minutos`
+- intenta aguantar cold starts lentos
+- si Render responde `502` por demasiado tiempo, usa el `Deploy Hook` para forzar recuperacion
 
-#### Job 3: resumen diario
-- URL: `https://TU_BACKEND.onrender.com/api/internal/scheduler/daily-summary`
-- Metodo: `POST`
-- Hora recomendada: `21:15`
-- Zona horaria: `America/Caracas`
+#### Animalitos Render Scheduler
+- despierta el backend antes de cada tarea importante
+- dispara:
+  - `refresh` cada 5 minutos
+  - `possible-results`
+  - `today-analysis`
+  - `daily-summary`
+  - `weekly-backfill`
 
-#### Job 4: backfill semanal
-- URL: `https://TU_BACKEND.onrender.com/api/internal/scheduler/weekly-backfill`
-- Metodo: `POST`
-- Frecuencia: domingo `04:10`
-- Zona horaria: `America/Caracas`
+### Como obtener el Deploy Hook de Render
+1. Entra al servicio `animalitos-backend` en Render.
+2. Ve a `Settings`.
+3. Busca `Deploy Hook`.
+4. Crea uno nuevo si aun no existe.
+5. Copia la URL y guardala en GitHub como:
 
-### Como crear cada job en cron-job.org
-1. Entra a tu panel de cron-job.org.
-2. Pulsa `Create cronjob`.
-3. En `Title` escribe un nombre claro.
-4. En `Address` pega la URL completa.
-5. En `Execution` elige la frecuencia.
-6. En `Request method` selecciona `POST`.
-7. En la parte avanzada agrega el header:
-
-```http
-X-Scheduler-Token: TU_TOKEN_PRIVADO
+```env
+ANIMALITOS_RENDER_DEPLOY_HOOK_URL=...
 ```
-
-8. Deja vacio el `Request body`.
-9. Activa el job.
-10. Guarda.
-
-### Configuracion sugerida para los 4 jobs
-
-#### 1. Animalitos Refresh
-- Title: `Animalitos Refresh`
-- URL: `https://TU_BACKEND.onrender.com/api/internal/scheduler/refresh`
-- Method: `POST`
-- Timezone: `America/Caracas`
-- Frequency: cada `5 minutos`
-
-#### 2. Animalitos Possible Results
-- Title: `Animalitos Possible Results`
-- URL: `https://TU_BACKEND.onrender.com/api/internal/scheduler/possible-results`
-- Method: `POST`
-- Timezone: `America/Caracas`
-- Hora: `08:05`
-
-#### 3. Animalitos Daily Summary
-- Title: `Animalitos Daily Summary`
-- URL: `https://TU_BACKEND.onrender.com/api/internal/scheduler/daily-summary`
-- Method: `POST`
-- Timezone: `America/Caracas`
-- Hora: `21:15`
-
-#### 4. Animalitos Weekly Backfill
-- Title: `Animalitos Weekly Backfill`
-- URL: `https://TU_BACKEND.onrender.com/api/internal/scheduler/weekly-backfill`
-- Method: `POST`
-- Timezone: `America/Caracas`
-- Dia: domingo
-- Hora: `04:10`
 
 ### Prueba minima recomendada
-Antes de activar todos:
-1. Crea primero `Animalitos Refresh`.
-2. Ejecuta una prueba manual si tu plan de cron-job.org muestra `Run now`.
-3. Revisa los logs en Render.
-4. Si responde `200`, crea los otros tres.
+Antes de dejarlo corriendo solo:
+1. Ejecuta manualmente el workflow `Animalitos Keepalive`.
+2. Ejecuta manualmente el workflow `Animalitos Render Scheduler` con target `refresh`.
+3. Revisa los logs de GitHub y confirma que terminan en verde.
+4. Revisa en el backend:
+   - `/ping`
+   - `/health`
+5. Verifica en el admin que cambien:
+   - `scheduler_last_received_at`
+   - `scheduler_last_completed_at`
+   - `scheduler_last_status`
+   - `scheduler_last_kind`
 
 ## Lo que necesito que me pases ahora
 Para seguir ayudandote sin bloquear nada, enviame solo esto:
@@ -276,3 +257,10 @@ Cuando todo este arriba, debes poder:
 - ejecutar refresh y backfill
 - recibir Telegram
 - apagar tu PC y que el sistema siga funcionando
+
+## Si quieres eliminar el sleep de verdad
+Debes cambiar en Render:
+
+- `plan: free` -> `Starter` o superior
+
+Eso ya no depende del codigo ni de GitHub Actions. El keepalive ayuda, pero no reemplaza un servicio siempre activo.

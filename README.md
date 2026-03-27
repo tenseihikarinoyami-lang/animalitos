@@ -12,7 +12,7 @@ Plataforma de monitoreo, historico y analitica operativa para `Lotto Activo`, `L
 - Panel admin con refresh, backfill, calidad diaria, auditoria, usuarios y exportes `CSV/PDF`.
 - Integracion Telegram para alertas admin y envio de resumen estadistico.
 - Bootstrap admin seguro por entorno o script.
-- Soporte para migracion a `Supabase Postgres` y despliegue en `Render + cron-job.org + Vercel`.
+- Soporte para migracion a `Supabase Postgres` y despliegue en `Render + GitHub Actions + Vercel`.
 
 ## Stack
 - Backend: `FastAPI`, `APScheduler`, `SQLAlchemy`, `BeautifulSoup`, `httpx`
@@ -71,4 +71,4 @@ start.bat
 La referencia completa de implementacion y operacion esta en [`GUIA_IMPLEMENTACION_Y_OPERACION.md`](/D:/Proyectos/animalitos/GUIA_IMPLEMENTACION_Y_OPERACION.md).
 
 ## Guia de despliegue en internet
-La ruta recomendada para dejar la app corriendo en la nube con `Supabase + Render + Vercel` esta en [`GUIA_RENDER_SUPABASE_VERCEL_CRONJOB.md`](/D:/Proyectos/animalitos/GUIA_RENDER_SUPABASE_VERCEL_CRONJOB.md).
+La ruta recomendada para dejar la app corriendo en la nube con `Supabase + Render + GitHub Actions + Vercel` esta en [`GUIA_RENDER_SUPABASE_VERCEL_CRONJOB.md`](/D:/Proyectos/animalitos/GUIA_RENDER_SUPABASE_VERCEL_CRONJOB.md).
