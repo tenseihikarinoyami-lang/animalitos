@@ -39,6 +39,15 @@ def _default_snapshot(snapshot_prefix: str) -> dict | None:
     )
 
 
+def _snapshot_has_date(snapshot: dict | None, field_name: str, expected_date: date) -> bool:
+    if not snapshot:
+        return False
+    value = snapshot.get(field_name)
+    if hasattr(value, "isoformat") and not isinstance(value, str):
+        value = value.isoformat()
+    return value == expected_date.isoformat()
+
+
 def _default_trends_request(lottery_name: str | None, days: int | None) -> bool:
     return not lottery_name and days in {None, settings.analytics_default_days}
 
@@ -179,7 +188,7 @@ async def get_possible_results(
 ):
     if _default_possible_results_request(top_n, lotteries):
         snapshot = _default_snapshot("possible-results:default:")
-        if snapshot:
+        if _snapshot_has_date(snapshot, "reference_date", local_now().date()):
             return snapshot
 
     selected_lotteries = [item.strip() for item in lotteries.split(",")] if lotteries else None
@@ -257,7 +266,7 @@ async def get_today_review(
             return snapshot
     else:
         snapshot = _default_snapshot("today-review:")
-        if snapshot:
+        if _snapshot_has_date(snapshot, "draw_date", local_now().date()):
             return snapshot
     return await asyncio.to_thread(
         analytics_service.build_today_prediction_review,
@@ -272,7 +281,7 @@ async def get_today_analysis(
 ):
     if not force_refresh:
         snapshot = _default_snapshot("today-analysis:")
-        if snapshot:
+        if _snapshot_has_date(snapshot, "draw_date", local_now().date()):
             return snapshot
 
     try:

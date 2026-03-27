@@ -3813,9 +3813,12 @@ class AnalyticsService:
         latest_failed = next((run for run in ingestion_runs if run.get("status") == "failed"), None)
         latest_backfill = db_service.get_latest_backfill_run()
         latest_prediction = db_service.get_latest_prediction_run()
+        latest_prediction_summary = (latest_prediction or {}).get("summary") or {}
         active_backfill_snapshot = db_service.get_analytics_snapshot("admin:backfill-status")
         scheduler_heartbeat = db_service.get_analytics_snapshot("scheduler:heartbeat") or {}
+        today_analysis_snapshot = db_service.get_analytics_snapshot(f"today-analysis:{local_now().date().isoformat()}") or {}
         now_local = local_now()
+        today_key = now_local.date().isoformat()
 
         warnings = []
         if settings.jwt_secret_key == "super-secret-key-change-in-production":
@@ -3863,6 +3866,25 @@ class AnalyticsService:
                     warnings.append(
                         "External scheduler heartbeat is stale; automatic refreshes may be delayed until a user session or fallback cycle wakes the service."
                     )
+
+        if latest_prediction_summary:
+            reference_date = latest_prediction_summary.get("reference_date")
+            if hasattr(reference_date, "isoformat") and not isinstance(reference_date, str):
+                reference_date = reference_date.isoformat()
+            if reference_date != today_key and active_times:
+                warnings.append(
+                    f"Latest prediction snapshot is stale ({reference_date}); possible-results automation is not generating runs for {today_key}."
+                )
+        else:
+            warnings.append("No prediction runs have been saved yet.")
+
+        analysis_draw_date = today_analysis_snapshot.get("draw_date")
+        if hasattr(analysis_draw_date, "isoformat") and not isinstance(analysis_draw_date, str):
+            analysis_draw_date = analysis_draw_date.isoformat()
+        if analysis_draw_date != today_key:
+            warnings.append(
+                f"Today-analysis snapshot is stale ({analysis_draw_date or 'missing'}); operational reports are not being refreshed for {today_key}."
+            )
 
         database_provider = "supabase" if db_service.is_postgres_mode else "mock"
 

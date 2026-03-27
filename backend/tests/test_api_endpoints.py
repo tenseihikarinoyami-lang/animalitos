@@ -480,6 +480,10 @@ def test_enjaulados_strategies_and_today_review_routes(client, admin_headers, mo
 def test_today_review_route_prefers_cached_snapshot(client, admin_headers, monkeypatch):
     generated_at = datetime(2026, 3, 23, tzinfo=timezone.utc)
     monkeypatch.setattr(
+        "app.api.monitoring.local_now",
+        lambda: datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
         "app.api.monitoring.db_service.get_analytics_snapshot",
         lambda snapshot_key: {
             "generated_at": generated_at,
@@ -511,6 +515,127 @@ def test_today_review_route_prefers_cached_snapshot(client, admin_headers, monke
 
     assert response.status_code == 200
     assert response.json()["evaluated_draws"] == 10
+
+
+def test_today_analysis_route_rebuilds_when_snapshot_is_stale(client, admin_headers, monkeypatch):
+    stale_generated_at = datetime(2026, 3, 24, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "app.api.monitoring.local_now",
+        lambda: datetime(2026, 3, 26, 10, 0, tzinfo=timezone.utc),
+    )
+
+    monkeypatch.setattr(
+        "app.api.monitoring.db_service.get_analytics_snapshot",
+        lambda snapshot_key: {
+            "generated_at": stale_generated_at,
+            "draw_date": "2026-03-24",
+            "day_regime": "volatil",
+            "operating_mode": "conservative",
+            "observed_results": [],
+            "system_hits_top1_top3_top5_so_far": {
+                "evaluated_draws": 0,
+                "hit_top_1": 0,
+                "hit_top_3": 0,
+                "hit_top_5": 0,
+                "hit_top_1_rate": 0,
+                "hit_top_3_rate": 0,
+                "hit_top_5_rate": 0,
+            },
+            "strategy_performance_today": [],
+            "forecast_by_lottery": [],
+            "notes": ["stale"],
+        }
+        if snapshot_key.startswith("today-analysis:")
+        else None,
+    )
+    monkeypatch.setattr("app.api.monitoring.db_service.get_latest_analytics_snapshot", lambda snapshot_prefix: None)
+
+    async def fresh_today_analysis(force_refresh=False):
+        return {
+            "generated_at": datetime(2026, 3, 26, tzinfo=timezone.utc),
+            "draw_date": "2026-03-26",
+            "day_regime": "estable",
+            "operating_mode": "balanced",
+            "observed_results": [],
+            "system_hits_top1_top3_top5_so_far": {
+                "evaluated_draws": 0,
+                "hit_top_1": 0,
+                "hit_top_3": 0,
+                "hit_top_5": 0,
+                "hit_top_1_rate": 0,
+                "hit_top_3_rate": 0,
+                "hit_top_5_rate": 0,
+            },
+            "strategy_performance_today": [],
+            "forecast_by_lottery": [],
+            "notes": ["fresh"],
+        }
+
+    monkeypatch.setattr("app.api.monitoring.monitoring_service.build_today_analysis", fresh_today_analysis)
+
+    response = client.get("/api/analytics/today-analysis", headers=admin_headers)
+
+    assert response.status_code == 200
+    assert response.json()["draw_date"] == "2026-03-26"
+
+
+def test_possible_results_route_rebuilds_when_snapshot_is_stale(client, admin_headers, monkeypatch):
+    monkeypatch.setattr(
+        "app.api.monitoring.local_now",
+        lambda: datetime(2026, 3, 26, 10, 0, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        "app.api.monitoring.db_service.get_analytics_snapshot",
+        lambda snapshot_key: {
+            "generated_at": datetime(2026, 3, 24, tzinfo=timezone.utc),
+            "reference_date": "2026-03-24",
+            "reference_time_local": "08:00",
+            "methodology_version": "ops-hybrid-ranking-v10",
+            "ensemble_version": "hybrid-ensemble-v3",
+            "baseline_methodology_version": "frequency-baseline-v1",
+            "methodology": "stale",
+            "disclaimer": "stale",
+            "history_days_covered": 30,
+            "history_results_considered": 1000,
+            "model_version_by_segment": {},
+            "score_components": [],
+            "lotteries": [],
+            "change_alerts": [],
+            "prediction_stability": {},
+            "operating_mode": "conservative",
+            "operating_notes": ["stale"],
+        }
+        if snapshot_key.startswith("possible-results:default:")
+        else None,
+    )
+    monkeypatch.setattr("app.api.monitoring.db_service.get_latest_analytics_snapshot", lambda snapshot_prefix: None)
+    monkeypatch.setattr(
+        "app.api.monitoring.analytics_service.build_possible_results_summary",
+        lambda **_kwargs: {
+            "generated_at": datetime(2026, 3, 26, tzinfo=timezone.utc),
+            "reference_date": "2026-03-26",
+            "reference_time_local": "08:00",
+            "methodology_version": "ops-hybrid-ranking-v10",
+            "ensemble_version": "hybrid-ensemble-v3",
+            "baseline_methodology_version": "frequency-baseline-v1",
+            "methodology": "fresh",
+            "disclaimer": "fresh",
+            "history_days_covered": 30,
+            "history_results_considered": 1000,
+            "model_version_by_segment": {},
+            "score_components": [],
+            "lotteries": [],
+            "change_alerts": [],
+            "prediction_stability": {},
+            "operating_mode": "balanced",
+            "operating_notes": ["fresh"],
+        },
+    )
+
+    response = client.get("/api/analytics/possible-results", headers=admin_headers)
+
+    assert response.status_code == 200
+    assert response.json()["reference_date"] == "2026-03-26"
 
 
 def test_today_review_route_prefers_exact_historical_snapshot(client, admin_headers, monkeypatch):

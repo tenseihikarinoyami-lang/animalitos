@@ -4,6 +4,8 @@ on:
   schedule:
     - cron: "5,15,25,35,45,55 * * * *"
     - cron: "5 12 * * *"
+    - cron: "35 13 * * *"
+    - cron: "35 17 * * *"
     - cron: "15 1 * * *"
     - cron: "10 8 * * 0"
   workflow_dispatch:
@@ -16,6 +18,8 @@ on:
         options:
           - refresh
           - possible-results
+          - today-analysis-opening
+          - today-analysis-midday
           - daily-summary
           - weekly-backfill
 
@@ -74,6 +78,36 @@ jobs:
             -X POST \
             -H "X-Scheduler-Token: ${SCHEDULER_TOKEN}" \
             "${BACKEND_URL}/api/internal/scheduler/daily-summary"
+
+  today-analysis-opening:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.target == 'today-analysis-opening') || (github.event_name == 'schedule' && github.event.schedule == '35 13 * * *') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger opening today analysis
+        env:
+          BACKEND_URL: ${{ secrets.ANIMALITOS_BACKEND_URL }}
+          SCHEDULER_TOKEN: ${{ secrets.ANIMALITOS_SCHEDULER_TOKEN }}
+        run: |
+          curl --fail-with-body --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 60 \
+            -X POST \
+            -H "X-Scheduler-Token: ${SCHEDULER_TOKEN}" \
+            "${BACKEND_URL}/api/internal/scheduler/today-analysis?phase=apertura"
+
+  today-analysis-midday:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.target == 'today-analysis-midday') || (github.event_name == 'schedule' && github.event.schedule == '35 17 * * *') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger midday today analysis
+        env:
+          BACKEND_URL: ${{ secrets.ANIMALITOS_BACKEND_URL }}
+          SCHEDULER_TOKEN: ${{ secrets.ANIMALITOS_SCHEDULER_TOKEN }}
+        run: |
+          curl --fail-with-body --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 60 \
+            -X POST \
+            -H "X-Scheduler-Token: ${SCHEDULER_TOKEN}" \
+            "${BACKEND_URL}/api/internal/scheduler/today-analysis?phase=media-jornada"
 
   weekly-backfill:
     if: ${{ (github.event_name == 'workflow_dispatch' && inputs.target == 'weekly-backfill') || (github.event_name == 'schedule' && github.event.schedule == '10 8 * * 0') }}
