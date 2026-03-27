@@ -6,9 +6,11 @@ from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from fastapi import FastAPI, Response, status
+from fastapi import FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import SQLAlchemyError
 from zoneinfo import ZoneInfo
 
 from app.api import admin, auth, monitoring
@@ -150,7 +152,7 @@ async def run_startup_bootstrap() -> None:
     database_warning_logged = False
 
     while True:
-        database_ready = await asyncio.to_thread(refresh_database_status)
+        database_ready = await asyncio.to_thread(refresh_database_status, True)
         if not database_required or database_ready:
             startup_steps = [
                 ("admin-bootstrap", ensure_admin_user),
@@ -202,6 +204,21 @@ async def run_startup_bootstrap() -> None:
         await asyncio.sleep(retry_delay_seconds)
 
 
+async def run_database_watchdog() -> None:
+    expected_provider = settings.database_provider.lower()
+    if expected_provider not in {"postgres", "supabase"}:
+        return
+
+    retry_delay_seconds = max(min(settings.db_connect_timeout_seconds, 12), 4)
+    while True:
+        runtime_status = runtime_status_snapshot()
+        if runtime_status.get("database_connected") is False:
+            database_ready = await asyncio.to_thread(refresh_database_status, True)
+            if database_ready:
+                mark_startup_phase("ready")
+        await asyncio.sleep(retry_delay_seconds)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging(debug=settings.debug)
@@ -227,14 +244,19 @@ async def lifespan(app: FastAPI):
         )
 
     startup_task = None
+    watchdog_task = None
     if expected_provider == "mock":
         await run_startup_bootstrap()
     else:
         startup_task = asyncio.create_task(run_startup_bootstrap())
+        watchdog_task = asyncio.create_task(run_database_watchdog())
     app.state.startup_task = startup_task
+    app.state.watchdog_task = watchdog_task
     yield
     if startup_task and not startup_task.done():
         startup_task.cancel()
+    if watchdog_task and not watchdog_task.done():
+        watchdog_task.cancel()
     if scheduler.running:
         scheduler.shutdown(wait=False)
 
@@ -245,6 +267,29 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(SQLAlchemyError)
+async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError):
+    mark_database_status(False)
+    mark_startup_phase("degraded")
+    log_event(
+        logger,
+        level=40,
+        event="sqlalchemy_request_failed",
+        path=request.url.path,
+        method=request.method,
+        error=str(exc),
+    )
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={
+            "detail": (
+                "El backend esta temporalmente degradado porque la base de datos no esta disponible. "
+                "Intenta de nuevo en unos minutos."
+            )
+        },
+    )
 
 app.add_middleware(
     CORSMiddleware,

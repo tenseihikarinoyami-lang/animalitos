@@ -1,5 +1,8 @@
 from datetime import date, datetime, timedelta, timezone
 
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.core.config import settings
 from app.core.runtime import register_startup_issue
 from app.services.database import db_service
 from app.services.schedule import local_now
@@ -76,6 +79,40 @@ def test_protected_routes_return_503_when_database_is_unavailable(client, monkey
 
     assert login_response.status_code == 503
     assert overview_response.status_code == 503
+
+
+def test_login_returns_503_when_database_query_raises_sqlalchemy_error(client, monkeypatch):
+    def broken_get_user(username):
+        raise SQLAlchemyError("database offline")
+
+    monkeypatch.setattr("app.api.auth.db_service.get_user", broken_get_user)
+
+    response = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "admin123"},
+    )
+
+    assert response.status_code == 503
+    assert "temporalmente degradado" in response.json()["detail"]
+
+
+def test_is_postgres_mode_does_not_initialize_postgres_on_status_check(monkeypatch):
+    init_calls = {"count": 0}
+
+    monkeypatch.setattr(settings, "database_provider", "supabase")
+    monkeypatch.setattr(settings, "database_url", "postgresql://example.com/test")
+    monkeypatch.setattr("app.services.database.postgres_core.get_engine", lambda: object())
+    monkeypatch.setattr("app.services.database.postgres_core.postgres_initialized", False)
+
+    def fake_initialize_postgres(force_retry: bool = False):
+        init_calls["count"] += 1
+        return True
+
+    monkeypatch.setattr("app.services.database.postgres_core.initialize_postgres", fake_initialize_postgres)
+    db_service.pg_engine = None
+
+    assert db_service.is_postgres_mode is False
+    assert init_calls["count"] == 0
 
 
 def test_register_forces_regular_user_role(client):

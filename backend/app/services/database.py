@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core import postgres as postgres_core
 from app.core.config import settings
+from app.core.runtime import mark_database_status
 from app.core.lottery_catalog import DEFAULT_DRAW_SCHEDULES
 from app.core.postgres import (
     admin_audit_logs_table,
@@ -43,24 +44,42 @@ class DatabaseService:
         self._ingestion_runs_cache: list[dict[str, Any]] | None = None
         self._audit_logs_cache: list[dict[str, Any]] | None = None
 
+    def _sync_postgres_engine(self) -> None:
+        if self.pg_engine is None:
+            self.pg_engine = postgres_core.get_engine()
+
+    def _mark_postgres_unavailable(self) -> None:
+        self.pg_engine = None
+        mark_database_status(False)
+
+    def refresh_postgres_mode(self, *, force_retry: bool = False) -> bool:
+        if not settings.use_postgres:
+            return False
+
+        self._sync_postgres_engine()
+        if self.pg_engine is None:
+            self._mark_postgres_unavailable()
+            return False
+
+        if not postgres_core.initialize_postgres(force_retry=force_retry):
+            self._mark_postgres_unavailable()
+            return False
+
+        self.pg_engine = postgres_core.get_engine()
+        ready = bool(self.pg_engine is not None and postgres_core.postgres_initialized)
+        mark_database_status(ready)
+        return ready
+
     @property
     def is_postgres_mode(self) -> bool:
         if not settings.use_postgres:
             return False
 
-        if self.pg_engine is None:
-            self.pg_engine = postgres_core.get_engine()
-
-        if self.pg_engine is None:
-            return False
-
-        if not postgres_core.postgres_initialized:
-            if not postgres_core.initialize_postgres():
-                self.pg_engine = None
-                return False
-            self.pg_engine = postgres_core.get_engine()
-
-        return bool(postgres_core.postgres_initialized and self.pg_engine is not None)
+        self._sync_postgres_engine()
+        ready = bool(postgres_core.postgres_initialized and self.pg_engine is not None)
+        if ready:
+            mark_database_status(True)
+        return ready
 
     @property
     def is_mock_mode(self) -> bool:
@@ -109,6 +128,16 @@ class DatabaseService:
             return value
         return date.fromisoformat(value)
 
+    def _normalize_result_record(self, result: dict[str, Any]) -> dict[str, Any]:
+        normalized = deepcopy(result)
+        draw_date = normalized.get("draw_date")
+        if isinstance(draw_date, datetime):
+            draw_date = draw_date.date().isoformat()
+        elif hasattr(draw_date, "isoformat") and not isinstance(draw_date, str):
+            draw_date = draw_date.isoformat()
+        normalized["draw_date"] = draw_date
+        return normalized
+
     def _should_allow_postgres_fallback(self) -> bool:
         return not settings.use_postgres
 
@@ -132,7 +161,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         for schedule in schedules:
             self._mock_schedules[schedule["canonical_lottery_name"]] = schedule
@@ -148,7 +177,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         if not self._mock_schedules:
             for schedule in DEFAULT_DRAW_SCHEDULES:
@@ -190,7 +219,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         self._mock_users[payload["username"]] = payload
         return payload["username"]
@@ -206,7 +235,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         user = self._mock_users.get(username)
         return deepcopy(user) if user else None
@@ -234,7 +263,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
                 if self._users_cache is not None:
                     return deepcopy(self._users_cache[:limit] if limit and limit > 0 else self._users_cache)
 
@@ -275,7 +304,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         for result in results:
             dedupe_key = result["dedupe_key"]
@@ -321,7 +350,7 @@ class DatabaseService:
                     if self._results_cache is not None:
                         return deepcopy(self._results_cache)
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
                 if self._results_cache is not None:
                     return deepcopy(self._results_cache)
                 raise
@@ -338,18 +367,37 @@ class DatabaseService:
         draw_time_local: str | None = None,
         limit: int | None = 100,
     ) -> list[dict[str, Any]]:
-        results = self._load_all_results() if not self.is_mock_mode else list(self._mock_results.values())
+        if self.is_postgres_mode:
+            try:
+                with self.pg_engine.begin() as connection:
+                    statement = select(results_table)
+                    if canonical_lottery_name:
+                        statement = statement.where(results_table.c.canonical_lottery_name == canonical_lottery_name)
+                    if start_date:
+                        statement = statement.where(results_table.c.draw_date >= self._coerce_date_arg(start_date))
+                    if end_date:
+                        statement = statement.where(results_table.c.draw_date <= self._coerce_date_arg(end_date))
+                    if draw_time_local:
+                        statement = statement.where(results_table.c.draw_time_local == draw_time_local)
+                    statement = statement.order_by(results_table.c.draw_datetime_utc.desc())
+                    if limit is not None and limit > 0:
+                        statement = statement.limit(limit)
+                    rows = connection.execute(statement).mappings()
+                    return [self._normalize_result_record(self._row_to_dict(row)) for row in rows]
+            except Exception:
+                self._mark_postgres_unavailable()
+                cached = self._get_cached_results()
+                if cached is not None:
+                    results = cached
+                else:
+                    raise
+        else:
+            results = self._load_all_results() if not self.is_mock_mode else list(self._mock_results.values())
 
         filtered = []
         for result in results:
+            result = self._normalize_result_record(result)
             draw_date = result.get("draw_date")
-            if isinstance(draw_date, datetime):
-                draw_date = draw_date.date().isoformat()
-            elif hasattr(draw_date, "isoformat") and not isinstance(draw_date, str):
-                draw_date = draw_date.isoformat()
-
-            result = deepcopy(result)
-            result["draw_date"] = draw_date
 
             if canonical_lottery_name and result.get("canonical_lottery_name") != canonical_lottery_name:
                 continue
@@ -409,7 +457,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         self._mock_ingestion_runs[payload["id"]] = payload
         return payload["id"]
@@ -450,7 +498,7 @@ class DatabaseService:
                             cached = [item for item in cached if item.get("status") == status]
                         return cached[:limit] if limit and limit > 0 else cached
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
                 if self._ingestion_runs_cache is not None:
                     cached = deepcopy(self._ingestion_runs_cache)
                     if trigger_contains:
@@ -498,7 +546,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         self._mock_analytics[snapshot_key] = payload
         return snapshot_key
@@ -514,7 +562,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         snapshot = self._mock_analytics.get(snapshot_key)
         return deepcopy(snapshot) if snapshot else None
@@ -533,7 +581,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         keys = list(self._mock_analytics.keys())
         if snapshot_prefix:
@@ -565,7 +613,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         self._mock_prediction_runs[data["id"]] = data
         return data["id"]
@@ -581,7 +629,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         runs = list(self._mock_prediction_runs.values())
 
@@ -639,7 +687,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         for example in examples:
             self._mock_model_training_examples[example["example_key"]] = deepcopy(example)
@@ -678,7 +726,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         examples = list(self._mock_model_training_examples.values())
 
@@ -741,7 +789,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         self._mock_model_versions[data["model_key"]] = data
         return data["model_key"]
@@ -768,7 +816,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         models = list(self._mock_model_versions.values())
 
@@ -842,7 +890,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         for review in reviews:
             self._mock_prediction_window_reviews[review["review_key"]] = deepcopy(review)
@@ -881,7 +929,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         reviews = list(self._mock_prediction_window_reviews.values())
 
@@ -928,7 +976,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         self._mock_audit_logs[data["id"]] = data
         return data["id"]
@@ -948,7 +996,7 @@ class DatabaseService:
                     if self._audit_logs_cache is not None:
                         return deepcopy(self._audit_logs_cache[:limit] if limit and limit > 0 else self._audit_logs_cache)
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
                 if self._audit_logs_cache is not None:
                     return deepcopy(self._audit_logs_cache[:limit] if limit and limit > 0 else self._audit_logs_cache)
 
@@ -970,7 +1018,7 @@ class DatabaseService:
                     if cached:
                         return len(cached)
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
                 cached = self._results_cache if self._results_cache is not None else []
                 return len(cached)
 
@@ -1010,7 +1058,7 @@ class DatabaseService:
             except Exception:
                 if not self._should_allow_postgres_fallback():
                     raise
-                self.pg_engine = None
+                self._mark_postgres_unavailable()
 
         removed = {
             "results_removed": 0,

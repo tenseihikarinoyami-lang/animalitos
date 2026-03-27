@@ -46,14 +46,14 @@ def database_required() -> bool:
     return settings.database_provider.lower() in {"postgres", "supabase"}
 
 
-def refresh_database_status() -> bool:
+def refresh_database_status(force_retry: bool = False) -> bool:
     if not database_required():
         mark_database_status(True)
         return True
 
     from app.services.database import db_service
 
-    connected = db_service.is_postgres_mode
+    connected = db_service.refresh_postgres_mode(force_retry=force_retry)
     mark_database_status(connected)
     return connected
 
@@ -62,10 +62,7 @@ def database_operational() -> bool:
     if not database_required():
         return True
 
-    if _database_connected is True:
-        return True
-
-    return refresh_database_status()
+    return _database_connected is True
 
 
 def runtime_status_snapshot() -> dict:
