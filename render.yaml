@@ -5,7 +5,7 @@ services:
     rootDir: backend
     plan: free
     autoDeploy: true
-    healthCheckPath: /health
+    healthCheckPath: /ping
     envVars:
       - key: DATABASE_PROVIDER
         value: supabase

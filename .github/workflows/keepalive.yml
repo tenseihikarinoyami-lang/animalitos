@@ -12,8 +12,39 @@ jobs:
   ping-backend:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      BACKEND_URL: https://animalitos-ufry.onrender.com
+      RENDER_DEPLOY_HOOK_URL: ${{ secrets.ANIMALITOS_RENDER_DEPLOY_HOOK_URL }}
     steps:
-      - name: Wake backend health endpoint
+      - name: Wake or recover backend
+        shell: bash
         run: |
-          curl --fail-with-body --silent --show-error --retry 3 --retry-delay 10 --retry-all-errors --max-time 45 \
-            "https://animalitos-ufry.onrender.com/health" > /dev/null
+          set -euo pipefail
+          BACKEND_URL="${BACKEND_URL%/}"
+
+          ping_backend() {
+            curl --fail-with-body --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 25 \
+              "${BACKEND_URL}/ping" > /dev/null
+          }
+
+          if ping_backend; then
+            exit 0
+          fi
+
+          echo "Initial ping failed, retrying after short wait..."
+          sleep 20
+          if ping_backend; then
+            exit 0
+          fi
+
+          if [ -n "${RENDER_DEPLOY_HOOK_URL:-}" ]; then
+            echo "Backend still unavailable. Triggering Render deploy hook..."
+            curl --fail-with-body --silent --show-error --retry 2 --retry-delay 10 --retry-all-errors --max-time 30 \
+              -X POST "${RENDER_DEPLOY_HOOK_URL}" > /dev/null
+            sleep 90
+            ping_backend
+            exit 0
+          fi
+
+          echo "Backend still unavailable and no deploy hook is configured." >&2
+          exit 1

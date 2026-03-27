@@ -195,6 +195,14 @@ async def health_check():
     }
 
 
+@app.get("/ping", tags=["Health"])
+async def ping():
+    return {
+        "status": "ok",
+        "timestamp": utc_now(),
+    }
+
+
 @app.get("/", tags=["Root"])
 async def root():
     return {

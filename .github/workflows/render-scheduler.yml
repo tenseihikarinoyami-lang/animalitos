@@ -33,7 +33,7 @@ jobs:
           BACKEND_URL: ${{ secrets.ANIMALITOS_BACKEND_URL }}
         run: |
           curl --fail-with-body --silent --show-error --retry 2 --retry-delay 8 --retry-all-errors --max-time 30 \
-            "${BACKEND_URL}/health" > /dev/null
+            "${BACKEND_URL}/ping" > /dev/null
 
       - name: Queue refresh
         env:

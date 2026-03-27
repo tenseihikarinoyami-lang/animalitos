@@ -4,7 +4,8 @@ const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL || '/api'
 const backendOrigin = configuredBaseUrl.endsWith('/api')
   ? configuredBaseUrl.slice(0, -4)
   : configuredBaseUrl
-const healthUrl = backendOrigin ? `${backendOrigin}/health` : '/health'
+const pingUrl = backendOrigin ? `${backendOrigin}/ping` : '/ping'
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const api = axios.create({
   baseURL: configuredBaseUrl,
@@ -30,9 +31,20 @@ api.interceptors.request.use(
 // Response interceptor for error handling
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
+    const config = error.config || {}
     const requestUrl = String(error.config?.url || '')
     const isAuthRequest = requestUrl.includes('/auth/login') || requestUrl.includes('/auth/register')
+    const isWarmupRequest = requestUrl.includes('/ping') || requestUrl.includes('/health')
+    const isNetworkError = !error.response
+
+    if (isNetworkError && !isWarmupRequest && !config.__warmupRetried) {
+      config.__warmupRetried = true
+      await api.warmup()
+      await sleep(1500)
+      return api.request(config)
+    }
+
     if (error.response?.status === 401 && !isAuthRequest) {
       localStorage.removeItem('token')
       localStorage.removeItem('auth_user')
@@ -53,8 +65,8 @@ api.setToken = (token) => {
 
 api.warmup = async () => {
   try {
-    await axios.get(healthUrl, {
-      timeout: 12000,
+    await axios.get(pingUrl, {
+      timeout: 15000,
       headers: {
         'Cache-Control': 'no-cache',
       },

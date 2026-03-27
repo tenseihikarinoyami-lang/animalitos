@@ -30,6 +30,13 @@ def test_protected_routes_require_authentication(client):
     assert response.status_code in {401, 403}
 
 
+def test_ping_route_is_public(client):
+    response = client.get("/ping")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
 def test_register_forces_regular_user_role(client):
     response = client.post(
         "/api/auth/register",
