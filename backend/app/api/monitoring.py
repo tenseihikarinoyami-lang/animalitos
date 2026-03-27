@@ -318,7 +318,16 @@ async def internal_scheduler_today_analysis(
     phase: str = "apertura",
     _: None = Depends(require_scheduler_token),
 ):
-    return {"sent": await monitoring_service.send_today_analysis_report(phase=phase)}
+    today_analysis_status, started = await monitoring_service.start_today_analysis_report(phase=phase)
+    return {
+        "accepted": started,
+        "message": (
+            "Reporte operativo del dia programado en segundo plano."
+            if started
+            else "Ya habia un reporte operativo en ejecucion."
+        ),
+        "details": today_analysis_status,
+    }
 
 
 @router.post("/internal/scheduler/weekly-backfill")

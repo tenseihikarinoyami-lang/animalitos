@@ -23,6 +23,8 @@ class MonitoringService:
     def __init__(self) -> None:
         self._backfill_task: asyncio.Task | None = None
         self._refresh_task: asyncio.Task | None = None
+        self._today_analysis_task: asyncio.Task | None = None
+        self._today_analysis_context: dict | None = None
         self._self_heal_task: asyncio.Task | None = None
         self._backtesting_snapshot_task: asyncio.Task | None = None
         self._external_signal_snapshot_task: asyncio.Task | None = None
@@ -387,6 +389,53 @@ class MonitoringService:
             )
         )
         return snapshot, True
+
+    async def start_today_analysis_report(
+        self,
+        *,
+        phase: str = "apertura",
+        force_refresh: bool = False,
+    ) -> tuple[dict, bool]:
+        trigger = f"scheduler-{phase}"
+        task_active = bool(self._today_analysis_task and not self._today_analysis_task.done())
+        current = self.get_scheduler_heartbeat()
+        if task_active:
+            current_details = {
+                **(self._today_analysis_context or {}),
+                "requested_phase": phase,
+                "started": False,
+            }
+            self._record_scheduler_heartbeat(
+                kind="today-analysis",
+                status="accepted",
+                trigger=trigger,
+                message="Ya existe un reporte operativo en ejecucion.",
+                details=current_details,
+            )
+            return self.get_scheduler_heartbeat() or current or {"details": current_details}, False
+
+        job_id = str(uuid4())
+        self._today_analysis_context = {
+            "job_id": job_id,
+            "phase": phase,
+            "force_refresh": force_refresh,
+            "started": True,
+        }
+        heartbeat = self._record_scheduler_heartbeat(
+            kind="today-analysis",
+            status="accepted",
+            trigger=trigger,
+            message="Reporte operativo del dia programado en segundo plano.",
+            details=self._today_analysis_context,
+        )
+        self._today_analysis_task = asyncio.create_task(
+            self._run_today_analysis_job(
+                job_id=job_id,
+                phase=phase,
+                force_refresh=force_refresh,
+            )
+        )
+        return heartbeat, True
 
     def _persist_default_snapshots(
         self,
@@ -1118,20 +1167,86 @@ class MonitoringService:
         )
         return analysis
 
-    async def send_today_analysis_report(self, phase: str = "apertura", force_refresh: bool = False) -> bool:
+    async def _run_today_analysis_job(self, *, job_id: str, phase: str, force_refresh: bool) -> None:
+        trigger = f"scheduler-{phase}"
+        self._record_scheduler_heartbeat(
+            kind="today-analysis",
+            status="running",
+            trigger=trigger,
+            message="Reporte operativo del dia en ejecucion.",
+            details={
+                "job_id": job_id,
+                "phase": phase,
+                "force_refresh": force_refresh,
+                "started": True,
+            },
+        )
+
+        try:
+            sent = await self.send_today_analysis_report(
+                phase=phase,
+                force_refresh=force_refresh,
+                record_heartbeat=False,
+            )
+            self._record_scheduler_heartbeat(
+                kind="today-analysis",
+                status="success" if sent else "failed",
+                trigger=trigger,
+                message="Reporte operativo del dia procesado.",
+                completed=True,
+                details={
+                    "job_id": job_id,
+                    "phase": phase,
+                    "force_refresh": force_refresh,
+                    "sent": sent,
+                },
+            )
+        except Exception as exc:
+            self._record_scheduler_heartbeat(
+                kind="today-analysis",
+                status="failed",
+                trigger=trigger,
+                message="El reporte operativo del dia fallo antes de completarse.",
+                completed=True,
+                details={
+                    "job_id": job_id,
+                    "phase": phase,
+                    "force_refresh": force_refresh,
+                    "sent": False,
+                    "error": str(exc),
+                },
+            )
+            log_event(
+                logging.getLogger(__name__),
+                logging.ERROR,
+                "today_analysis_scheduler_failed",
+                phase=phase,
+                error=str(exc),
+            )
+        finally:
+            self._today_analysis_task = None
+            self._today_analysis_context = None
+
+    async def send_today_analysis_report(
+        self,
+        phase: str = "apertura",
+        force_refresh: bool = False,
+        record_heartbeat: bool = True,
+    ) -> bool:
         analysis = await self.build_today_analysis(force_refresh=force_refresh)
         sent = await telegram_service.send_today_analysis_report(
             analysis.model_dump(),
             phase=phase,
         )
-        self._record_scheduler_heartbeat(
-            kind="today-analysis",
-            status="success" if sent else "failed",
-            trigger=f"scheduler-{phase}",
-            message="Reporte operativo del dia procesado.",
-            completed=True,
-            details={"phase": phase, "sent": sent},
-        )
+        if record_heartbeat:
+            self._record_scheduler_heartbeat(
+                kind="today-analysis",
+                status="success" if sent else "failed",
+                trigger=f"scheduler-{phase}",
+                message="Reporte operativo del dia procesado.",
+                completed=True,
+                details={"phase": phase, "sent": sent},
+            )
         return sent
 
     async def send_daily_summary(self) -> bool:
