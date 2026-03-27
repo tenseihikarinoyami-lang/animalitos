@@ -362,6 +362,39 @@ def test_internal_scheduler_today_analysis_is_queued(client, monkeypatch):
     assert response.json()["details"]["details"]["job_id"] == "today-analysis-123"
 
 
+def test_internal_scheduler_daily_summary_is_queued(client, monkeypatch):
+    monkeypatch.setattr("app.api.monitoring.settings.scheduler_service_token", "scheduler-test-token")
+
+    async def fake_start_daily_summary_report():
+        return (
+            {
+                "last_kind": "daily-summary",
+                "last_status": "accepted",
+                "last_trigger": "scheduler-daily-summary",
+                "message": "Resumen diario programado en segundo plano.",
+                "details": {
+                    "job_id": "daily-summary-123",
+                    "started": True,
+                },
+            },
+            True,
+        )
+
+    monkeypatch.setattr(
+        "app.api.monitoring.monitoring_service.start_daily_summary_report",
+        fake_start_daily_summary_report,
+    )
+
+    response = client.post(
+        "/api/internal/scheduler/daily-summary",
+        headers={"X-Scheduler-Token": "scheduler-test-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+    assert response.json()["details"]["details"]["job_id"] == "daily-summary-123"
+
+
 def test_default_backtesting_endpoint_returns_placeholder_when_snapshot_is_missing(client, admin_headers, monkeypatch):
     monkeypatch.setattr("app.api.monitoring.db_service.get_latest_analytics_snapshot", lambda snapshot_prefix=None: None)
     triggered = {"called": False}

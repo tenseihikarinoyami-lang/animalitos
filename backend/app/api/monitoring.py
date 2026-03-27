@@ -310,7 +310,16 @@ async def internal_scheduler_possible_results(_: None = Depends(require_schedule
 
 @router.post("/internal/scheduler/daily-summary")
 async def internal_scheduler_daily_summary(_: None = Depends(require_scheduler_token)):
-    return {"sent": await monitoring_service.send_daily_summary()}
+    daily_summary_status, started = await monitoring_service.start_daily_summary_report()
+    return {
+        "accepted": started,
+        "message": (
+            "Resumen diario programado en segundo plano."
+            if started
+            else "Ya habia un resumen diario en ejecucion."
+        ),
+        "details": daily_summary_status,
+    }
 
 
 @router.post("/internal/scheduler/today-analysis")

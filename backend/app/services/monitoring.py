@@ -23,6 +23,8 @@ class MonitoringService:
     def __init__(self) -> None:
         self._backfill_task: asyncio.Task | None = None
         self._refresh_task: asyncio.Task | None = None
+        self._daily_summary_task: asyncio.Task | None = None
+        self._daily_summary_context: dict | None = None
         self._today_analysis_task: asyncio.Task | None = None
         self._today_analysis_context: dict | None = None
         self._self_heal_task: asyncio.Task | None = None
@@ -435,6 +437,39 @@ class MonitoringService:
                 force_refresh=force_refresh,
             )
         )
+        return heartbeat, True
+
+    async def start_daily_summary_report(self) -> tuple[dict, bool]:
+        trigger = "scheduler-daily-summary"
+        task_active = bool(self._daily_summary_task and not self._daily_summary_task.done())
+        current = self.get_scheduler_heartbeat()
+        if task_active:
+            current_details = {
+                **(self._daily_summary_context or {}),
+                "started": False,
+            }
+            self._record_scheduler_heartbeat(
+                kind="daily-summary",
+                status="accepted",
+                trigger=trigger,
+                message="Ya existe un resumen diario en ejecucion.",
+                details=current_details,
+            )
+            return self.get_scheduler_heartbeat() or current or {"details": current_details}, False
+
+        job_id = str(uuid4())
+        self._daily_summary_context = {
+            "job_id": job_id,
+            "started": True,
+        }
+        heartbeat = self._record_scheduler_heartbeat(
+            kind="daily-summary",
+            status="accepted",
+            trigger=trigger,
+            message="Resumen diario programado en segundo plano.",
+            details=self._daily_summary_context,
+        )
+        self._daily_summary_task = asyncio.create_task(self._run_daily_summary_job(job_id=job_id))
         return heartbeat, True
 
     def _persist_default_snapshots(
@@ -1227,6 +1262,55 @@ class MonitoringService:
             self._today_analysis_task = None
             self._today_analysis_context = None
 
+    async def _run_daily_summary_job(self, *, job_id: str) -> None:
+        trigger = "scheduler-daily-summary"
+        self._record_scheduler_heartbeat(
+            kind="daily-summary",
+            status="running",
+            trigger=trigger,
+            message="Resumen diario en ejecucion.",
+            details={
+                "job_id": job_id,
+                "started": True,
+            },
+        )
+
+        try:
+            sent = await self.send_daily_summary(record_heartbeat=False)
+            self._record_scheduler_heartbeat(
+                kind="daily-summary",
+                status="success" if sent else "failed",
+                trigger=trigger,
+                message="Resumen diario procesado.",
+                completed=True,
+                details={
+                    "job_id": job_id,
+                    "sent": sent,
+                },
+            )
+        except Exception as exc:
+            self._record_scheduler_heartbeat(
+                kind="daily-summary",
+                status="failed",
+                trigger=trigger,
+                message="El resumen diario fallo antes de completarse.",
+                completed=True,
+                details={
+                    "job_id": job_id,
+                    "sent": False,
+                    "error": str(exc),
+                },
+            )
+            log_event(
+                logging.getLogger(__name__),
+                logging.ERROR,
+                "daily_summary_scheduler_failed",
+                error=str(exc),
+            )
+        finally:
+            self._daily_summary_task = None
+            self._daily_summary_context = None
+
     async def send_today_analysis_report(
         self,
         phase: str = "apertura",
@@ -1249,7 +1333,7 @@ class MonitoringService:
             )
         return sent
 
-    async def send_daily_summary(self) -> bool:
+    async def send_daily_summary(self, record_heartbeat: bool = True) -> bool:
         await asyncio.to_thread(analytics_service.ensure_daily_external_snapshots, force_refresh=False)
         await asyncio.to_thread(analytics_service.train_models_and_promote)
         overview = await asyncio.to_thread(analytics_service.build_dashboard_overview)
@@ -1260,14 +1344,15 @@ class MonitoringService:
             review_summary.model_dump(),
             model_health.model_dump(),
         )
-        self._record_scheduler_heartbeat(
-            kind="daily-summary",
-            status="success" if sent else "failed",
-            trigger="scheduler-daily-summary",
-            message="Resumen diario procesado.",
-            completed=True,
-            details={"sent": sent},
-        )
+        if record_heartbeat:
+            self._record_scheduler_heartbeat(
+                kind="daily-summary",
+                status="success" if sent else "failed",
+                trigger="scheduler-daily-summary",
+                message="Resumen diario procesado.",
+                completed=True,
+                details={"sent": sent},
+            )
         return sent
 
     async def send_today_possible_results(
