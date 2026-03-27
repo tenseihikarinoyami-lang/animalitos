@@ -305,7 +305,16 @@ async def internal_scheduler_refresh(_: None = Depends(require_scheduler_token))
 
 @router.post("/internal/scheduler/possible-results")
 async def internal_scheduler_possible_results(_: None = Depends(require_scheduler_token)):
-    return await monitoring_service.send_today_possible_results(preview_only=False)
+    possible_results_status, started = await monitoring_service.start_possible_results_report()
+    return {
+        "accepted": started,
+        "message": (
+            "Resumen de posibles resultados programado en segundo plano."
+            if started
+            else "Ya habia un resumen de posibles resultados en ejecucion."
+        ),
+        "details": possible_results_status,
+    }
 
 
 @router.post("/internal/scheduler/daily-summary")
@@ -341,4 +350,13 @@ async def internal_scheduler_today_analysis(
 
 @router.post("/internal/scheduler/weekly-backfill")
 async def internal_scheduler_weekly_backfill(_: None = Depends(require_scheduler_token)):
-    return await monitoring_service.run_weekly_recovery_backfill()
+    weekly_backfill_status, started = await monitoring_service.start_weekly_recovery_backfill()
+    return {
+        "accepted": started,
+        "message": (
+            "Backfill semanal programado en segundo plano."
+            if started
+            else "Ya habia un backfill semanal en ejecucion."
+        ),
+        "details": weekly_backfill_status,
+    }

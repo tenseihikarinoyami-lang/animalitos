@@ -395,6 +395,74 @@ def test_internal_scheduler_daily_summary_is_queued(client, monkeypatch):
     assert response.json()["details"]["details"]["job_id"] == "daily-summary-123"
 
 
+def test_internal_scheduler_possible_results_is_queued(client, monkeypatch):
+    monkeypatch.setattr("app.api.monitoring.settings.scheduler_service_token", "scheduler-test-token")
+
+    async def fake_start_possible_results_report():
+        return (
+            {
+                "last_kind": "possible-results",
+                "last_status": "accepted",
+                "last_trigger": "scheduler-possible-results",
+                "message": "Resumen de posibles resultados programado en segundo plano.",
+                "details": {
+                    "job_id": "possible-results-123",
+                    "preview_only": False,
+                    "started": True,
+                },
+            },
+            True,
+        )
+
+    monkeypatch.setattr(
+        "app.api.monitoring.monitoring_service.start_possible_results_report",
+        fake_start_possible_results_report,
+    )
+
+    response = client.post(
+        "/api/internal/scheduler/possible-results",
+        headers={"X-Scheduler-Token": "scheduler-test-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+    assert response.json()["details"]["details"]["job_id"] == "possible-results-123"
+
+
+def test_internal_scheduler_weekly_backfill_is_queued(client, monkeypatch):
+    monkeypatch.setattr("app.api.monitoring.settings.scheduler_service_token", "scheduler-test-token")
+
+    async def fake_start_weekly_recovery_backfill():
+        return (
+            {
+                "last_kind": "weekly-backfill",
+                "last_status": "accepted",
+                "last_trigger": "scheduler-weekly",
+                "message": "Backfill semanal programado en segundo plano.",
+                "details": {
+                    "job_id": "weekly-backfill-123",
+                    "days": 7,
+                    "started": True,
+                },
+            },
+            True,
+        )
+
+    monkeypatch.setattr(
+        "app.api.monitoring.monitoring_service.start_weekly_recovery_backfill",
+        fake_start_weekly_recovery_backfill,
+    )
+
+    response = client.post(
+        "/api/internal/scheduler/weekly-backfill",
+        headers={"X-Scheduler-Token": "scheduler-test-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+    assert response.json()["details"]["details"]["job_id"] == "weekly-backfill-123"
+
+
 def test_default_backtesting_endpoint_returns_placeholder_when_snapshot_is_missing(client, admin_headers, monkeypatch):
     monkeypatch.setattr("app.api.monitoring.db_service.get_latest_analytics_snapshot", lambda snapshot_prefix=None: None)
     triggered = {"called": False}

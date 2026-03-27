@@ -25,6 +25,8 @@ class MonitoringService:
         self._refresh_task: asyncio.Task | None = None
         self._daily_summary_task: asyncio.Task | None = None
         self._daily_summary_context: dict | None = None
+        self._possible_results_task: asyncio.Task | None = None
+        self._possible_results_context: dict | None = None
         self._today_analysis_task: asyncio.Task | None = None
         self._today_analysis_context: dict | None = None
         self._self_heal_task: asyncio.Task | None = None
@@ -471,6 +473,64 @@ class MonitoringService:
         )
         self._daily_summary_task = asyncio.create_task(self._run_daily_summary_job(job_id=job_id))
         return heartbeat, True
+
+    async def start_possible_results_report(self) -> tuple[dict, bool]:
+        trigger = "scheduler-possible-results"
+        task_active = bool(self._possible_results_task and not self._possible_results_task.done())
+        current = self.get_scheduler_heartbeat()
+        if task_active:
+            current_details = {
+                **(self._possible_results_context or {}),
+                "started": False,
+            }
+            self._record_scheduler_heartbeat(
+                kind="possible-results",
+                status="accepted",
+                trigger=trigger,
+                message="Ya existe un resumen de posibles resultados en ejecucion.",
+                details=current_details,
+            )
+            return self.get_scheduler_heartbeat() or current or {"details": current_details}, False
+
+        job_id = str(uuid4())
+        self._possible_results_context = {
+            "job_id": job_id,
+            "preview_only": False,
+            "started": True,
+        }
+        heartbeat = self._record_scheduler_heartbeat(
+            kind="possible-results",
+            status="accepted",
+            trigger=trigger,
+            message="Resumen de posibles resultados programado en segundo plano.",
+            details=self._possible_results_context,
+        )
+        self._possible_results_task = asyncio.create_task(self._run_possible_results_job(job_id=job_id))
+        return heartbeat, True
+
+    async def start_weekly_recovery_backfill(self) -> tuple[dict, bool]:
+        trigger = "scheduler-weekly"
+        snapshot, started = await self.start_backfill(
+            request=BackfillRequest(days=7),
+            trigger=trigger,
+        )
+        heartbeat = self._record_scheduler_heartbeat(
+            kind="weekly-backfill",
+            status="accepted",
+            trigger=trigger,
+            message=(
+                "Backfill semanal programado en segundo plano."
+                if started
+                else "Ya existe un backfill semanal en ejecucion."
+            ),
+            details={
+                "job_id": snapshot.get("job_id"),
+                "days": 7,
+                "backfill_status": snapshot.get("status"),
+                "started": started,
+            },
+        )
+        return heartbeat, started
 
     def _persist_default_snapshots(
         self,
@@ -1060,6 +1120,18 @@ class MonitoringService:
             status="running",
             message="Backfill iniciado en segundo plano.",
         )
+        if trigger == "scheduler-weekly":
+            self._record_scheduler_heartbeat(
+                kind="weekly-backfill",
+                status="running",
+                trigger=trigger,
+                message="Backfill semanal en ejecucion.",
+                details={
+                    "job_id": current_snapshot.get("job_id"),
+                    "days": request.days or settings.backfill_default_days,
+                    "started": True,
+                },
+            )
 
         def progress_callback(**updates):
             nonlocal current_snapshot
@@ -1087,6 +1159,23 @@ class MonitoringService:
                 errors_count=response["details"].get("errors_count", 0),
                 current_date=current_snapshot.get("end_date"),
             )
+            if trigger == "scheduler-weekly":
+                self._record_scheduler_heartbeat(
+                    kind="weekly-backfill",
+                    status=final_status,
+                    trigger=trigger,
+                    message="Backfill semanal procesado.",
+                    completed=True,
+                    details={
+                        "job_id": current_snapshot.get("job_id"),
+                        "days": request.days or settings.backfill_default_days,
+                        "ingestion_run_id": response["details"].get("ingestion_run_id"),
+                        "results_found": response["details"].get("results_found", 0),
+                        "new_results": response["details"].get("new_results", 0),
+                        "duplicates": response["details"].get("duplicates", 0),
+                        "errors_count": response["details"].get("errors_count", 0),
+                    },
+                )
         except Exception as exc:
             current_snapshot = self._update_backfill_snapshot(
                 current_snapshot,
@@ -1096,6 +1185,19 @@ class MonitoringService:
                 errors_count=(current_snapshot.get("errors_count") or 0) + 1,
                 completed_at=utc_now(),
             )
+            if trigger == "scheduler-weekly":
+                self._record_scheduler_heartbeat(
+                    kind="weekly-backfill",
+                    status="failed",
+                    trigger=trigger,
+                    message="El backfill semanal fallo antes de completarse.",
+                    completed=True,
+                    details={
+                        "job_id": current_snapshot.get("job_id"),
+                        "days": request.days or settings.backfill_default_days,
+                        "error": str(exc),
+                    },
+                )
             raise
         finally:
             self._backfill_task = None
@@ -1311,6 +1413,63 @@ class MonitoringService:
             self._daily_summary_task = None
             self._daily_summary_context = None
 
+    async def _run_possible_results_job(self, *, job_id: str) -> None:
+        trigger = "scheduler-possible-results"
+        self._record_scheduler_heartbeat(
+            kind="possible-results",
+            status="running",
+            trigger=trigger,
+            message="Resumen de posibles resultados en ejecucion.",
+            details={
+                "job_id": job_id,
+                "preview_only": False,
+                "started": True,
+            },
+        )
+
+        try:
+            result = await self.send_today_possible_results(
+                preview_only=False,
+                trigger_context=trigger,
+                record_heartbeat=False,
+            )
+            sent = bool(result.get("details", {}).get("sent"))
+            self._record_scheduler_heartbeat(
+                kind="possible-results",
+                status="success" if sent else "failed",
+                trigger=trigger,
+                message="Resumen estadistico del dia procesado.",
+                completed=True,
+                details={
+                    "job_id": job_id,
+                    "prediction_run_id": result.get("details", {}).get("prediction_run_id"),
+                    "sent": sent,
+                },
+            )
+        except Exception as exc:
+            self._record_scheduler_heartbeat(
+                kind="possible-results",
+                status="failed",
+                trigger=trigger,
+                message="El resumen de posibles resultados fallo antes de completarse.",
+                completed=True,
+                details={
+                    "job_id": job_id,
+                    "preview_only": False,
+                    "sent": False,
+                    "error": str(exc),
+                },
+            )
+            log_event(
+                logging.getLogger(__name__),
+                logging.ERROR,
+                "possible_results_scheduler_failed",
+                error=str(exc),
+            )
+        finally:
+            self._possible_results_task = None
+            self._possible_results_context = None
+
     async def send_today_analysis_report(
         self,
         phase: str = "apertura",
@@ -1363,6 +1522,7 @@ class MonitoringService:
         trigger_context: str = "manual-summary",
         previous_summary: dict | None = None,
         summary=None,
+        record_heartbeat: bool = True,
     ) -> dict:
         if summary is None:
             should_use_default_snapshot = (
@@ -1403,14 +1563,15 @@ class MonitoringService:
         backtesting_snapshot = await asyncio.to_thread(db_service.get_latest_analytics_snapshot, "backtesting:default:")
         if not backtesting_snapshot:
             self.start_backtesting_snapshot_refresh()
-        self._record_scheduler_heartbeat(
-            kind="possible-results",
-            status=delivery_status,
-            trigger=trigger_context,
-            message="Resumen estadistico del dia procesado.",
-            completed=True,
-            details={"prediction_run_id": prediction_run_id, "preview_only": preview_only, "sent": sent},
-        )
+        if record_heartbeat:
+            self._record_scheduler_heartbeat(
+                kind="possible-results",
+                status=delivery_status,
+                trigger=trigger_context,
+                message="Resumen estadistico del dia procesado.",
+                completed=True,
+                details={"prediction_run_id": prediction_run_id, "preview_only": preview_only, "sent": sent},
+            )
         log_event(
             logging.getLogger(__name__),
             logging.INFO,
